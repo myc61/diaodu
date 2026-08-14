@@ -1,0 +1,23 @@
+/build/
+/frontend/dist/
+/frontend/node_modules/
+/frontend/*.tsbuildinfo
+/frontend/vite.config.js
+/frontend/vite.config.d.ts
+/frontend/src/**/*.js
+/frontend/src/**/*.d.ts
+!/frontend/src/env.d.ts
+/.env
+/.idea/
+/.vscode/
+/.cursor/
+/.agents/
+/.codex/
+/docs/*.md
+*.swp
+*.tmp
+
+# Database migrations are required for deployment and must be committed.
+!/db/
+!/db/migrations/
+!/db/migrations/*.sql

@@ -1,0 +1,19 @@
+profile: standard_dispatch
+
+features:
+  multi_robot: true
+  navigation: true
+  maps: true
+  scene_switch: true
+  devices: true
+  workflow_editor: true
+  robot_config: true
+
+project_plugin: ""
+
+runtime:
+  protocol_threads: 4
+  blocking_threads: 2
+  pose_frontend_rate_hz: 10
+  robot_limit: 20
+  authentication: false

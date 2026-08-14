@@ -1,0 +1,45 @@
+template: zj_humanoid_noetic
+
+identity:
+  name: ""
+  model: zj_humanoid
+
+ros:
+  version: ROS1
+  distribution: noetic
+  namespace: ""
+  rosbridge:
+    host: ""
+    port: 9090
+    path: /
+    secure: false
+  rosapi:
+    enabled: true
+
+remote_access:
+  protocol: NONE
+  port: 22
+  username: ""
+  credential_reference: ""
+  known_hosts_reference: ""
+
+interfaces:
+  pose:
+    topic: /zj_humanoid/navigation/odom_info
+    message_type: nav_msgs/Odometry
+    mapping_key: odometry_pose
+  navigation:
+    operation_kind: ACTION
+    adapter: ROS1_ACTIONLIB
+    action_type: navigation/NavigationAction
+    server_name: /zj_humanoid/navigation/navigation
+    goal_topic: /zj_humanoid/navigation/navigation/goal
+    cancel_topic: /zj_humanoid/navigation/navigation/cancel
+    status_topic: /zj_humanoid/navigation/navigation/status
+    feedback_topic: /zj_humanoid/navigation/navigation/feedback
+    result_topic: /zj_humanoid/navigation/navigation/result
+    defaults:
+      distance_tolerance: 0.15
+      heading_tolerance: 0.2
+  relocalization: {}
+  additional_capabilities: []

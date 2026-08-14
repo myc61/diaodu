@@ -1,0 +1,32 @@
+#pragma once
+
+#include "dispatcher/domain/types.hpp"
+
+#include <chrono>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+namespace dispatcher::ros {
+
+struct CachedPose {
+  domain::RobotPose pose;
+  bool stale{true};
+  bool scene_map_matched{false};
+  std::chrono::system_clock::time_point updated_at;
+};
+
+class PoseCache {
+ public:
+  void upsert(CachedPose pose);
+  [[nodiscard]] std::optional<CachedPose> get(const std::string& robot_id) const;
+  [[nodiscard]] std::vector<CachedPose> snapshot() const;
+
+ private:
+  mutable std::mutex mutex_;
+  std::unordered_map<std::string, CachedPose> poses_;
+};
+
+}  // namespace dispatcher::ros

@@ -1,0 +1,9 @@
+.git
+.agents
+.codex
+.cursor
+build
+frontend/dist
+frontend/node_modules
+.env
+*.tmp

@@ -1,0 +1,8 @@
+/home/mayichao/diaodu/backend/build/CMakeFiles/dispatcher_core.dir
+/home/mayichao/diaodu/backend/build/CMakeFiles/dispatcher_core_cli.dir
+/home/mayichao/diaodu/backend/build/CMakeFiles/edit_cache.dir
+/home/mayichao/diaodu/backend/build/CMakeFiles/rebuild_cache.dir
+/home/mayichao/diaodu/backend/build/CMakeFiles/list_install_components.dir
+/home/mayichao/diaodu/backend/build/CMakeFiles/install.dir
+/home/mayichao/diaodu/backend/build/CMakeFiles/install/local.dir
+/home/mayichao/diaodu/backend/build/CMakeFiles/install/strip.dir

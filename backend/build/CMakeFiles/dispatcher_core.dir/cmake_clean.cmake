@@ -1,0 +1,43 @@
+file(REMOVE_RECURSE
+  "CMakeFiles/dispatcher_core.dir/src/concurrency/execution_runtime.o"
+  "CMakeFiles/dispatcher_core.dir/src/concurrency/execution_runtime.o.d"
+  "CMakeFiles/dispatcher_core.dir/src/domain/connection_state.o"
+  "CMakeFiles/dispatcher_core.dir/src/domain/connection_state.o.d"
+  "CMakeFiles/dispatcher_core.dir/src/domain/map_transform.o"
+  "CMakeFiles/dispatcher_core.dir/src/domain/map_transform.o.d"
+  "CMakeFiles/dispatcher_core.dir/src/domain/resource_arbiter.o"
+  "CMakeFiles/dispatcher_core.dir/src/domain/resource_arbiter.o.d"
+  "CMakeFiles/dispatcher_core.dir/src/domain/robot_connection_config.o"
+  "CMakeFiles/dispatcher_core.dir/src/domain/robot_connection_config.o.d"
+  "CMakeFiles/dispatcher_core.dir/src/maps/map_import_service.o"
+  "CMakeFiles/dispatcher_core.dir/src/maps/map_import_service.o.d"
+  "CMakeFiles/dispatcher_core.dir/src/maps/map_yaml.o"
+  "CMakeFiles/dispatcher_core.dir/src/maps/map_yaml.o.d"
+  "CMakeFiles/dispatcher_core.dir/src/maps/pgm.o"
+  "CMakeFiles/dispatcher_core.dir/src/maps/pgm.o.d"
+  "CMakeFiles/dispatcher_core.dir/src/maps/png_writer.o"
+  "CMakeFiles/dispatcher_core.dir/src/maps/png_writer.o.d"
+  "CMakeFiles/dispatcher_core.dir/src/ops/ops_log.o"
+  "CMakeFiles/dispatcher_core.dir/src/ops/ops_log.o.d"
+  "CMakeFiles/dispatcher_core.dir/src/ros/beast_transport.o"
+  "CMakeFiles/dispatcher_core.dir/src/ros/beast_transport.o.d"
+  "CMakeFiles/dispatcher_core.dir/src/ros/pose_cache.o"
+  "CMakeFiles/dispatcher_core.dir/src/ros/pose_cache.o.d"
+  "CMakeFiles/dispatcher_core.dir/src/ros/pose_mapper.o"
+  "CMakeFiles/dispatcher_core.dir/src/ros/pose_mapper.o.d"
+  "CMakeFiles/dispatcher_core.dir/src/ros/rosbridge_protocol.o"
+  "CMakeFiles/dispatcher_core.dir/src/ros/rosbridge_protocol.o.d"
+  "CMakeFiles/dispatcher_core.dir/src/ros/rosbridge_session.o"
+  "CMakeFiles/dispatcher_core.dir/src/ros/rosbridge_session.o.d"
+  "CMakeFiles/dispatcher_core.dir/src/workflow/event_spec.o"
+  "CMakeFiles/dispatcher_core.dir/src/workflow/event_spec.o.d"
+  "CMakeFiles/dispatcher_core.dir/src/workflow/feedback_trigger.o"
+  "CMakeFiles/dispatcher_core.dir/src/workflow/feedback_trigger.o.d"
+  "libdispatcher_core.a"
+  "libdispatcher_core.pdb"
+)
+
+# Per-language clean rules from dependency scanning.
+foreach(lang CXX)
+  include(CMakeFiles/dispatcher_core.dir/cmake_clean_${lang}.cmake OPTIONAL)
+endforeach()
