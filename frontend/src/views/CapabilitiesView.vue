@@ -109,6 +109,9 @@ const eventSourceOptions = computed(() => {
   if (form.operation_kind === "SERVICE") {
     return [{ label: "RESULT（服务响应）", value: "RESULT" }];
   }
+  if (form.operation_kind === "SSH") {
+    return [{ label: "RESULT（执行结果）", value: "RESULT" }];
+  }
   return [{ label: "RESULT（发布结果）", value: "RESULT" }];
 });
 
@@ -119,7 +122,20 @@ const eventSourceHint = computed(() => {
   if (form.operation_kind === "SERVICE") {
     return "Service 只有一次响应，不存在 Feedback。";
   }
+  if (form.operation_kind === "SSH") {
+    return "SSH 执行完成或 readiness 通过后产生 RESULT 事件。";
+  }
   return "这里表示 Topic 发布结果；订阅 Topic 消息属于独立事件源。";
+});
+
+const editSubtitle = computed(() => {
+  if (isSystemNavigation.value) {
+    return "系统导航能力：用于编排中的导航任务";
+  }
+  if (form.operation_kind === "SSH") {
+    return "受控 SSH 能力：选择绑定机器人与 SSH 执行方案，执行已保存的脚本或结构化命令";
+  }
+  return "选扫描结果中的服务/Action/Topic 后，会按 rosapi 请求定义自动生成执行参数 Schema";
 });
 
 const eventOpOptions = [
@@ -249,6 +265,9 @@ const sshRobotId = computed({
       ssh_profile_id: ""
     };
     form.endpoint_name = "";
+    if (value) {
+      testRobotId.value = value;
+    }
   }
 });
 
@@ -433,6 +452,9 @@ function fillForm(item: CapabilityTemplate): void {
   form.protocol_config = item.protocol_config?.adapter
     ? item.protocol_config
     : { adapter: adapterForKind(item.operation_kind), ...(item.protocol_config ?? {}) };
+  if (form.operation_kind === "SSH") {
+    testRobotId.value = String(form.protocol_config?.ssh_robot_id ?? "");
+  }
   form.event_specs = item.event_specs ?? [];
   loadEventSpecs(item.event_specs);
   schemaText.value = JSON.stringify(form.parameter_schema, null, 2);
@@ -761,6 +783,13 @@ async function runTest(): Promise<void> {
     errorMessage.value = "请选择测试机器人";
     return;
   }
+  if (
+    form.operation_kind === "SSH" &&
+    testRobotId.value !== sshRobotId.value
+  ) {
+    errorMessage.value = "SSH 能力只能对绑定机器人执行受控方案";
+    return;
+  }
   testing.value = true;
   errorMessage.value = "";
   testResult.value = null;
@@ -793,7 +822,7 @@ onMounted(() => {
         <div class="panel-title-row">
           <div>
             <h2>机器人能力</h2>
-            <span>配置动作名与调用方式（rosbridge），供地图点位与流程引用</span>
+            <span>配置动作名与调用方式（rosbridge / 受控 SSH），供地图点位与流程引用</span>
           </div>
           <n-button type="primary" size="small" @click="startCreate">
             新建
@@ -838,11 +867,7 @@ onMounted(() => {
             <div>
               <h2>{{ isCreating ? "新建能力" : "编辑能力" }}</h2>
               <span>
-                {{
-                  isSystemNavigation
-                    ? "系统导航能力：用于编排中的导航任务"
-                    : "选扫描结果中的服务/Action/Topic 后，会按 rosapi 请求定义自动生成执行参数 Schema"
-                }}
+                {{ editSubtitle }}
               </span>
             </div>
             <n-space>
@@ -1183,14 +1208,21 @@ onMounted(() => {
 
       <n-card size="small" title="在线测试（不推进流程）">
         <n-space vertical :size="12">
-          <n-form-item label="测试机器人">
+          <n-form-item
+            :label="
+              form.operation_kind === 'SSH'
+                ? '测试机器人（SSH 绑定机器人）'
+                : '测试机器人'
+            "
+          >
             <n-select
               v-model:value="testRobotId"
               :options="robotOptions"
+              :disabled="form.operation_kind === 'SSH'"
               placeholder="选择 ONLINE 机器人"
             />
           </n-form-item>
-          <div>
+          <div v-if="form.operation_kind !== 'SSH'">
             <div class="section-label">执行参数预览</div>
             <SchemaForm
               :model-value="testParameters"
@@ -1198,6 +1230,15 @@ onMounted(() => {
               @update:model-value="testParameters = $event"
             />
           </div>
+          <n-alert
+            v-else
+            type="warning"
+            :bordered="false"
+          >
+            测试将执行已保存的受控 SSH 方案（{{
+              form.endpoint_name || sshProfileId || "未选择方案"
+            }}），请确认目标机器人与命令无误。
+          </n-alert>
           <n-button
             type="primary"
             :loading="testing"
@@ -1210,7 +1251,11 @@ onMounted(() => {
             JSON.stringify(testResult, null, 2)
           }}</pre>
           <p class="hint">
-            仅通过该机器人的 rosbridge 调用，不创建流程运行记录。
+            {{
+              form.operation_kind === "SSH"
+                ? "执行所选受控 SSH 方案，不创建流程运行记录。"
+                : "仅通过该机器人的 rosbridge 调用，不创建流程运行记录。"
+            }}
           </p>
         </n-space>
       </n-card>
