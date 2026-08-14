@@ -226,6 +226,7 @@ function redrawOverlays(): void {
   if (props.showRobots) {
     for (const robot of props.robots) {
       if (
+        !robot.drawable ||
         !robot.pose ||
         robot.pose.pixel_x === null ||
         robot.pose.pixel_y === null

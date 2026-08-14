@@ -754,6 +754,11 @@ void registerRoutes() {
 
           const auto cached = appState().pose_cache->get(robot_id);
           if (cached.has_value() && map.has_value()) {
+            const auto now = std::chrono::system_clock::now();
+            const auto age = now - cached->updated_at;
+            const auto stale_timeout =
+                std::chrono::milliseconds(robot->stale_timeout_ms);
+            const bool stale = age > stale_timeout;
             const auto metadata = toMetadata(*map);
             const auto pixel = domain::worldToPixel(
                 metadata,
@@ -765,7 +770,7 @@ void registerRoutes() {
             // Draw when affiliated + we have pixel coords. Stale poses still
             // render (frontend can dim); outside-map poses are still useful.
             const bool drawable =
-                cached->scene_map_matched && pixel.has_value() &&
+                !stale && cached->scene_map_matched && pixel.has_value() &&
                 robot->current_scene_id == scene->id &&
                 robot->current_map_version_id == map->id;
             robot_json["drawable"] = drawable;
@@ -773,7 +778,7 @@ void registerRoutes() {
                 {"x", cached->pose.x},
                 {"y", cached->pose.y},
                 {"yaw", cached->pose.yaw},
-                {"stale", cached->stale},
+                {"stale", stale},
                 {"scene_map_matched", cached->scene_map_matched},
                 {"updated_at",
                  std::chrono::duration_cast<std::chrono::milliseconds>(

@@ -4,6 +4,7 @@
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/websocket.hpp>
+#include <boost/beast/websocket/stream_base.hpp>
 
 #include <chrono>
 #include <system_error>
@@ -133,6 +134,14 @@ void BeastTransport::run() {
       }
       auto ws = std::make_unique<websocket::stream<tcp::socket>>(
           std::move(socket));
+      // Detect half-open TCP connections promptly. ROS pose traffic is
+      // frequent, so an idle connection longer than a few seconds should be
+      // treated as lost rather than staying ONLINE forever.
+      websocket::stream_base::timeout ws_timeout{};
+      ws_timeout.handshake_timeout = std::chrono::seconds(3);
+      ws_timeout.idle_timeout = std::chrono::seconds(3);
+      ws_timeout.keep_alive_pings = true;
+      ws->set_option(ws_timeout);
       // Autobahn/rosbridge rejects Host without port on non-80/443 ports.
       const auto host_header = host_ + ":" + std::to_string(port_);
       ws->handshake(host_header, path_.empty() ? "/" : path_);

@@ -1425,6 +1425,12 @@ void WorkspaceRepository::updateRobotConnectionState(
       "WHERE robot_id = $1::uuid",
       robot_id,
       connection_state);
+  if (connection_state != "ONLINE") {
+    tx.exec_params(
+        "UPDATE dispatch.robots SET localization_status = 'UNKNOWN', "
+        "updated_at = now() WHERE id = $1::uuid",
+        robot_id);
+  }
   tx.commit();
 }
 
