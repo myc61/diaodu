@@ -104,7 +104,17 @@ const businessCapabilities = computed(() => {
 
 let pollTimer: number | undefined;
 let controller: AbortController | undefined;
-let pointCounter = 1;
+
+function nextPointName(): string {
+  const usedNames = new Set(
+    mapPoints.value.map((point) => point.name.trim().toLowerCase())
+  );
+  let candidate = 1;
+  while (usedNames.has(`p${candidate}`.toLowerCase())) {
+    candidate += 1;
+  }
+  return `P${candidate}`;
+}
 
 const activeMap = computed(() => workspace.value?.map ?? null);
 const sceneRobots = computed(() => workspace.value?.robots ?? []);
@@ -652,10 +662,11 @@ async function onClickPixel(payload: { x: number; y: number }): Promise<void> {
     if (toolMode.value !== "place") {
       return;
     }
+    const generatedName = nextPointName();
     const created = await createMapPoint({
       scene_id: selectedSceneId.value,
       map_version_id: activeMap.value.id,
-      name: `P${pointCounter++}`,
+      name: generatedName,
       x: world.x,
       y: world.y,
       yaw: (yawDegrees.value * Math.PI) / 180

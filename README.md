@@ -66,7 +66,71 @@ config/                  部署 Profile 与机器人模板
 deploy/                  前后端 Dockerfile 与 nginx
 ```
 
-## 快速开始
+## 一键部署
+
+服务器安装好 Docker Engine 和 Docker Compose v2 后，可以从 Git 仓库直接部署：
+
+```bash
+git clone https://github.com/myc61/diaodu.git diaodu
+cd diaodu
+./deploy.sh
+```
+
+也可以写成一条命令：
+
+```bash
+git clone https://github.com/myc61/diaodu.git diaodu && cd diaodu && ./deploy.sh
+```
+
+`deploy.sh` 会自动完成：
+
+1. 检查 Docker 和 `docker compose`；
+2. 首次部署时生成 `.env` 和随机数据库密码；
+3. 构建 `dispatcher`、`web` 镜像；
+4. 启动 PostgreSQL 并等待健康；
+5. 检查已有数据库并补齐当前 `0015`—`0017` 增量迁移；
+6. 升级旧数据库前自动备份到 `backups/`；
+7. 启动 API 和 Web，等待三个服务全部健康；
+8. 输出访问地址和容器状态。
+
+首次部署时可以覆盖默认端口或指定数据库密码：
+
+```bash
+DISPATCHER_WEB_PORT=8088 \
+DISPATCHER_API_PORT=8080 \
+DISPATCHER_DB_PASSWORD=你的字母数字密码 \
+./deploy.sh
+```
+
+密码未指定时脚本会生成 48 位十六进制随机密码，并把 `.env` 权限设为 `600`。为了兼容数据库连接 URL，手工指定的密码只允许字母、数字、点、下划线和连字符。
+
+更新代码后重新部署：
+
+```bash
+git pull --ff-only
+./deploy.sh
+```
+
+已有镜像、不需要重新构建时：
+
+```bash
+./deploy.sh --no-build
+```
+
+需要拉取最新 Docker 基础镜像时：
+
+```bash
+./deploy.sh --pull
+```
+
+部署完成后：
+
+- Web 工程师工作台：`http://服务器IP:8088`
+- API 健康检查：`http://服务器IP:8080/api/v1/health`
+
+> 一键部署不会删除 PostgreSQL 数据卷，也不会自动生成机器人 SSH 私钥。真实 SSH 密钥和 `known_hosts` 与现场机器人相关，仍需管理员按后文单独配置。
+
+## 手工部署
 
 ```bash
 cp .env.example .env
@@ -85,16 +149,37 @@ docker compose ps
 
 空 PostgreSQL 数据卷首次初始化时，Compose 会把迁移目录挂载到容器的 `/docker-entrypoint-initdb.d` 并自动按文件名顺序执行，因此新环境不需要手工跑迁移。
 
-已有 PostgreSQL 持久卷不会自动重放后来新增的迁移。升级现有环境时，必须在原数据库上按顺序补跑尚未执行的迁移，不要删除数据卷来“解决”迁移问题。示例：
+已有 PostgreSQL 持久卷不会自动重放后来新增的迁移。升级现有环境时，必须在原数据库上按顺序补跑尚未执行的迁移，不要删除数据卷来“解决”迁移问题。先检查新增表是否存在：
 
 ```bash
-docker compose exec postgres \
-  psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
-  -f /docker-entrypoint-initdb.d/0016_robot_ssh_profiles.sql
+docker compose exec -T postgres sh -c \
+  'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc \
+  "SELECT to_regclass('"'"'dispatch.robot_startup_profiles'"'"');"'
+```
 
-docker compose exec postgres \
-  psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
-  -f /docker-entrypoint-initdb.d/0017_ssh_capability_kind.sql
+如果结果为空，说明至少缺少 `0015`；按实际缺失版本顺序补跑。下面示例覆盖本次 SSH/跨流程改造的三个迁移：
+
+```bash
+docker compose exec -T postgres sh -c \
+  'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+  -f /docker-entrypoint-initdb.d/0015_linked_runs_and_startup_profiles.sql'
+
+docker compose exec -T postgres sh -c \
+  'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+  -f /docker-entrypoint-initdb.d/0016_robot_ssh_profiles.sql'
+
+docker compose exec -T postgres sh -c \
+  'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+  -f /docker-entrypoint-initdb.d/0017_ssh_capability_kind.sql'
+```
+
+如果数据库已经执行过其中某个迁移，不要重复执行非幂等的旧迁移；先查看数据库中现有列、表和约束，或仅执行尚未应用的版本。迁移完成后可验证：
+
+```bash
+docker compose exec -T postgres sh -c \
+  'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc \
+  "SELECT to_regclass('"'"'dispatch.robot_startup_profiles'"'"'), \
+  to_regclass('"'"'dispatch.workflow_signals'"'"');"'
 ```
 
 ## 基本使用顺序

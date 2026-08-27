@@ -1,4 +1,7 @@
 /build/
+/**/build/
+/CMakeFiles/
+/**/CMakeFiles/
 /frontend/dist/
 /frontend/node_modules/
 /frontend/*.tsbuildinfo
@@ -14,6 +17,7 @@
 /.agents/
 /.codex/
 /docs/*.md
+/backups/
 *.swp
 *.tmp
 
