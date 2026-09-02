@@ -207,6 +207,23 @@ docker compose exec -T postgres sh -c \
   to_regclass('"'"'dispatch.workflow_signals'"'"');"'
 ```
 
+## 工作区一键迁移
+
+`git push` 不会带走页面里的能力模板、机器人、场景、地图文件、点位和流程。本机导出一个压缩包，拷到新机器再导入：
+
+```bash
+# 当前机器（postgres / dispatcher 已启动）
+./scripts/migrate_workspace.sh export
+
+# 把 backups/workspace-pack-*.tar.gz 拷到新机器仓库目录后
+./deploy.sh
+./scripts/migrate_workspace.sh import
+```
+
+导入会替换目标库中的这些业务数据（运行历史会因外键一并清掉），地图文件写入 Docker 卷 `map-data`。不含 SSH 私钥；导入后请核对机器人 IP / rosbridge。
+
+只迁能力模板时仍可用 `./scripts/migrate_capabilities.sh export`。
+
 ## 基本使用顺序
 
 1. 在“机器人”页添加机器人：名称、IP/主机名、rosbridge 端口和 WebSocket 路径，并配置定位话题。
