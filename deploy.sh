@@ -17,6 +17,7 @@ usage() {
   ./deploy.sh             生成配置、构建镜像、迁移数据库并启动服务
   ./deploy.sh --pull      构建前拉取最新基础镜像
   ./deploy.sh --no-build  跳过镜像构建，只迁移并启动已有镜像
+                          （离线机器先 pack_images.sh import）
   ./deploy.sh --help      显示帮助
 
 首次部署可选环境变量：

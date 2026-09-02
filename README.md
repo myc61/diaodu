@@ -224,6 +224,21 @@ docker compose exec -T postgres sh -c \
 
 只迁能力模板时仍可用 `./scripts/migrate_capabilities.sh export`。
 
+## 离线镜像包
+
+构建时需要从网络拉 `postgres`、`node`、`nginx` 等基础镜像，并编译后端。可以把已经构建好的运行镜像打成 tar，拷到无网或弱网机器：
+
+```bash
+# 本机已 ./deploy.sh 成功后
+./scripts/pack_images.sh export
+
+# 把 backups/dispatcher-images-*.tar.gz 和代码一起拷到新机器后
+./scripts/pack_images.sh import
+./deploy.sh --no-build
+```
+
+包内是 `postgres:16-alpine`、`dispatcher-dispatcher`、`dispatcher-web`。不要用 `git` 提交该 tar。
+
 ## 基本使用顺序
 
 1. 在“机器人”页添加机器人：名称、IP/主机名、rosbridge 端口和 WebSocket 路径，并配置定位话题。
