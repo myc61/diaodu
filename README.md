@@ -61,8 +61,9 @@ backend/                 C++20 后端
   src/remote/            受控 SSH 执行器
   tests/                 核心测试
 frontend/                Vue 3 工作台
-db/migrations/           0001 到 0017 数据库迁移
-config/                  部署 Profile 与机器人模板
+db/migrations/           0001 到 0019 数据库迁移
+config/                   部署 Profile 与机器人模板
+scripts/                   运维辅助脚本
 deploy/                  前后端 Dockerfile 与 nginx
 ```
 
@@ -88,7 +89,7 @@ git clone https://github.com/myc61/diaodu.git diaodu && cd diaodu && ./deploy.sh
 2. 首次部署时生成 `.env` 和随机数据库密码；
 3. 构建 `dispatcher`、`web` 镜像；
 4. 启动 PostgreSQL 并等待健康；
-5. 检查已有数据库并补齐当前 `0015`—`0017` 增量迁移；
+5. 检查已有数据库并补齐当前 `0015`—`0019` 增量迁移；
 6. 升级旧数据库前自动备份到 `backups/`；
 7. 启动 API 和 Web，等待三个服务全部健康；
 8. 输出访问地址和容器状态。
@@ -128,7 +129,23 @@ git pull --ff-only
 - Web 工程师工作台：`http://服务器IP:8088`
 - API 健康检查：`http://服务器IP:8080/api/v1/health`
 
-> 一键部署不会删除 PostgreSQL 数据卷，也不会自动生成机器人 SSH 私钥。真实 SSH 密钥和 `known_hosts` 与现场机器人相关，仍需管理员按后文单独配置。
+> 一键部署不会删除 PostgreSQL 数据卷，也不会自动生成机器人 SSH 私钥。真实 SSH 密钥和 `known_hosts` 与现场机器人相关；可使用 `scripts/provision_robot_ssh.sh` 自动完成首次配置。
+
+## SSH 快速配置
+
+推荐使用本地初始化脚本，把密钥生成、一次性密码引导、主机指纹登记、Docker 只读挂载和容器内 SSH 测试压缩为一次操作：
+
+```bash
+./scripts/provision_robot_ssh.sh \
+  --host 192.168.1.20 \
+  --user naviai \
+  --port 22 \
+  --readiness-script ./check_ready.sh
+```
+
+脚本第一次运行时仍需输入一次机器人密码，用于安装 Dispatcher 公钥；之后运行流程使用 SSH Key，不再需要密码。脚本还会生成可粘贴到页面的启动方案 JSON，并自动生成本地 `docker-compose.override.yml`。如果机器人已经在系统中创建，可以追加 `--robot-id <UUID> --register-profile` 自动注册启动方案。
+
+完整字段说明、机器人准备、场景绑定、流程节点和故障排查见 `docs/SSH_SETUP_GUIDE.md`。
 
 ## 手工部署
 
@@ -145,7 +162,7 @@ docker compose ps
 
 ## 数据库迁移
 
-数据库迁移文件位于 `db/migrations/`，当前为 `0001_initial.sql` 到 `0017_ssh_capability_kind.sql`。
+数据库迁移文件位于 `db/migrations/`，当前为 `0001_initial.sql` 到 `0019_navigation_tolerance_defaults.sql`。
 
 空 PostgreSQL 数据卷首次初始化时，Compose 会把迁移目录挂载到容器的 `/docker-entrypoint-initdb.d` 并自动按文件名顺序执行，因此新环境不需要手工跑迁移。
 
@@ -157,7 +174,7 @@ docker compose exec -T postgres sh -c \
   "SELECT to_regclass('"'"'dispatch.robot_startup_profiles'"'"');"'
 ```
 
-如果结果为空，说明至少缺少 `0015`；按实际缺失版本顺序补跑。下面示例覆盖本次 SSH/跨流程改造的三个迁移：
+如果结果为空，说明至少缺少 `0015`；按实际缺失版本顺序补跑。下面示例覆盖 SSH 与删除机器人相关的增量迁移：
 
 ```bash
 docker compose exec -T postgres sh -c \
@@ -171,6 +188,14 @@ docker compose exec -T postgres sh -c \
 docker compose exec -T postgres sh -c \
   'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
   -f /docker-entrypoint-initdb.d/0017_ssh_capability_kind.sql'
+
+docker compose exec -T postgres sh -c \
+  'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+  -f /docker-entrypoint-initdb.d/0018_robot_delete_run_history.sql'
+
+docker compose exec -T postgres sh -c \
+  'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+  -f /docker-entrypoint-initdb.d/0019_navigation_tolerance_defaults.sql'
 ```
 
 如果数据库已经执行过其中某个迁移，不要重复执行非幂等的旧迁移；先查看数据库中现有列、表和约束，或仅执行尚未应用的版本。迁移完成后可验证：
@@ -197,7 +222,8 @@ START --成功边--> ROBOT_CAPABILITY(/robot_task) --成功边--> END
 
 ## 流程与事件边界
 
-- `START` 只能通过成功边连接首个业务节点。START 不产生能力事件，禁止用业务事件边连接首个动作。
+- `START` 只能通过成功边连接首个业务节点。START 不产生能力事件，禁止用业务事件边或失败边连接首个动作。
+- 服务、动作、导航、SSH 等节点失败且重试耗尽后走失败边；没有失败边时整次运行标记 FAILED。
 - 与地点无关的机器人内部业务使用 `ROBOT_CAPABILITY`，不要创建虚假点位。
 - 点位动作不自动导航；是否导航由显式 `NAVIGATION` 节点表达。机器人内部自行移动的业务能力标记为 `ROBOT_INTERNAL`。
 - Service 没有 Feedback，只有 RESULT；Action/Navigation 才有 FEEDBACK 和 RESULT。
@@ -269,6 +295,8 @@ START --成功边--> ROBOT_CAPABILITY(/robot_task) --成功边--> END
 
 SSH 私钥和 `known_hosts` 必须由管理员在宿主机放置，并通过 Docker Secret 或只读 bind mount 注入 dispatcher 容器。默认允许的服务端引用根目录为 `/run/secrets:/etc/dispatcher/ssh`，可用 `DISPATCHER_SSH_SECRET_ROOTS` 扩展。
 
+优先使用上面的 `scripts/provision_robot_ssh.sh`。它默认将密钥保存到 `~/.config/dispatcher/ssh`，生成的 Compose 覆盖文件会被 Docker Compose 自动读取；手工部署时再按下面步骤操作。
+
 启用真实 SSH 前：
 
 1. 在宿主机安全目录准备低权限账号的私钥。
@@ -311,7 +339,7 @@ npm --prefix frontend run build
 尚未形成可靠生产闭环：
 
 - 业务成功/失败条件求值：当前主要依赖 rosbridge `success`，未按响应字段执行 `success_condition`/`failure_condition`。
-- 失败、超时、取消边和节点级超时/取消确认不完整。
+- 超时、取消边和节点级超时/取消确认不完整；失败边已支持，重试耗尽后走 `failure` 边。
 - DELAY、重试等待和下一轮循环是进程内定时任务，后端重启后不能恢复。
 - 资源锁尚未覆盖命令下发到 result/取消/人工处置的完整生命周期。
 - 幂等、去重、断线对账和 `UNCERTAIN/RECOVERING` 未完成。

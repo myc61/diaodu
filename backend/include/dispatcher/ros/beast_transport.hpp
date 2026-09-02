@@ -3,6 +3,7 @@
 #include "dispatcher/ros/rosbridge_session.hpp"
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -48,6 +49,8 @@ class BeastTransport : public IRosbridgeTransport,
   std::atomic<bool> stop_requested_{false};
   std::atomic<bool> connected_{false};
   std::mutex write_mutex_;
+  std::condition_variable stop_cv_;
+  std::mutex stop_mutex_;
   std::thread worker_;
   struct Impl;
   std::unique_ptr<Impl> impl_;

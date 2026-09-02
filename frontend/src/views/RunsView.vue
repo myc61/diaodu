@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { Background } from "@vue-flow/background";
 import { Controls } from "@vue-flow/controls";
-import { MarkerType, VueFlow } from "@vue-flow/core";
+import { MarkerType, VueFlow, type NodeTypesObject } from "@vue-flow/core";
 import { Archive, Play, RefreshCw, Square, Trash2 } from "lucide-vue-next";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
@@ -21,11 +21,16 @@ import {
   type WorkflowRunSummary
 } from "../api/runs";
 import { listWorkflows } from "../api/workflows";
+import WorkflowGraphNode from "../components/WorkflowGraphNode.vue";
 import type { WorkflowSummary } from "../types/workflow";
 
 import "@vue-flow/core/dist/style.css";
 import "@vue-flow/core/dist/theme-default.css";
 import "@vue-flow/controls/dist/style.css";
+
+const nodeTypes: NodeTypesObject = {
+  dispatch: WorkflowGraphNode
+};
 
 const router = useRouter();
 const runs = ref<WorkflowRunSummary[]>([]);
@@ -116,21 +121,19 @@ const runtimeNodes = computed(() =>
     const run = nodeRunByKey.value.get(id);
     const state = run?.state ?? "PENDING";
     const info = stateInfo(state);
-    const baseLabel = String(data.label ?? raw.type ?? id);
+    const nodeType = String(raw.type ?? "DEFAULT");
+    const baseLabel = String(data.label ?? nodeType ?? id);
     return {
       id,
-      type: raw.type === "START" ? "input" : raw.type === "END" ? "output" : "default",
+      type: "dispatch",
       position: (raw.position as { x: number; y: number } | undefined) ?? { x: 0, y: 0 },
-      label: `${baseLabel}\n${info.label}`,
-      data: { ...data, runtime_state: state },
-      class: `runtime-node runtime-node-${state.toLowerCase()}`,
-      style: {
-        border: `2px solid ${info.color}`,
-        background: info.background,
-        color: "#1f2925",
-        whiteSpace: "pre-line",
-        minWidth: "130px"
-      }
+      data: {
+        ...data,
+        nodeType,
+        label: `${baseLabel}${info.label ? `\n${info.label}` : ""}`,
+        runtime_state: state
+      },
+      class: `runtime-node runtime-node-${state.toLowerCase()}`
     };
   })
 );
@@ -156,12 +159,27 @@ const runtimeEdges = computed(() =>
     const id = String(raw.id ?? `${raw.source}-${raw.target}`);
     const traversed = traversedEdgeIds.value.has(id);
     const edgeKind = String(raw.edge_kind ?? "success");
-    const color = traversed ? (edgeKind === "event" ? "#7e57c2" : "#238636") : "#aeb8b3";
+    const color = traversed
+      ? edgeKind === "event"
+        ? "#7e57c2"
+        : edgeKind === "failure"
+          ? "#b03a2e"
+          : "#238636"
+      : "#aeb8b3";
+    const label =
+      edgeKind === "event"
+        ? `事件：${String(raw.event_name ?? "")}`
+        : edgeKind === "failure"
+          ? "失败"
+          : "成功";
+    const sourceHandle = edgeKind === "failure" ? "failure" : "success";
     return {
       id,
       source: String(raw.source ?? ""),
       target: String(raw.target ?? ""),
-      label: edgeKind === "event" ? `事件：${String(raw.event_name ?? "")}` : "成功",
+      sourceHandle,
+      targetHandle: "in",
+      label,
       animated: traversed && selectedRun.value?.state === "RUNNING",
       class: traversed ? "runtime-edge-traversed" : "runtime-edge-pending",
       style: {
@@ -558,6 +576,7 @@ onBeforeUnmount(() => {
               <VueFlow
                 :nodes="runtimeNodes"
                 :edges="runtimeEdges"
+                :node-types="nodeTypes"
                 fit-view-on-init
                 :nodes-draggable="false"
                 :nodes-connectable="false"
@@ -847,11 +866,12 @@ onBeforeUnmount(() => {
   min-height: 260px;
 }
 
-.runtime-flow :deep(.vue-flow__node) {
-  border-radius: 8px;
-  box-shadow: 0 2px 8px rgb(30 55 43 / 10%);
-  font-size: 12px;
-  line-height: 1.35;
+.runtime-flow :deep(.vue-flow__node-dispatch) {
+  padding: 0;
+  border: none;
+  background: transparent;
+  width: auto;
+  box-shadow: none;
 }
 
 .runtime-flow :deep(.runtime-node-running) {

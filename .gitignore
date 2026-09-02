@@ -17,6 +17,8 @@
 /.agents/
 /.codex/
 /docs/*.md
+!/docs/SSH_SETUP_GUIDE.md
+/docker-compose.override.yml
 /backups/
 *.swp
 *.tmp

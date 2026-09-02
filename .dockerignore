@@ -6,4 +6,5 @@ build
 frontend/dist
 frontend/node_modules
 .env
+/docker-compose.override.yml
 *.tmp

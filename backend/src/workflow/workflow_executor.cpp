@@ -325,6 +325,10 @@ void WorkflowExecutor::failNode(
   repository_.updateNodeRun(
       node->id, "FAILED", node->assigned_robot_id, node->output_data, error);
   node->state = "FAILED";
+  if (followEdges(detail, node_key, "failure") > 0) {
+    maybeFinishRun(detail);
+    return;
+  }
   repository_.updateWorkflowRunState(detail.run.id, "FAILED", detail.run.context_data);
   detail.run.state = "FAILED";
   notifyParentRun(detail, false, message);
@@ -393,8 +397,7 @@ void WorkflowExecutor::notifyParentRun(
               {"child_state", child.run.state}})) {
     return;
   }
-  repository_.updateWorkflowRunState(
-      parent->run.id, "FAILED", parent->run.context_data);
+  node_it->state = "FAILED";
   (void)repository_.insertWorkflowEvent(
       parent->run.id,
       node_it->id,
@@ -403,13 +406,20 @@ void WorkflowExecutor::notifyParentRun(
        {"child_state", child.run.state},
        {"error", message}},
       "subflow-failed:" + child.run.id);
+  if (followEdges(*parent, node_it->node_key, "failure") > 0) {
+    maybeFinishRun(*parent);
+    return;
+  }
+  repository_.updateWorkflowRunState(
+      parent->run.id, "FAILED", parent->run.context_data);
 }
 
-void WorkflowExecutor::followEdges(
+std::size_t WorkflowExecutor::followEdges(
     db::WorkflowRunDetail& detail,
     const std::string& source_key,
     const std::string& edge_kind,
     const std::string& event_name) {
+  std::size_t followed = 0;
   for (const auto& edge :
        detail.graph.value("edges", nlohmann::json::array())) {
     if (edge.value("source", "") != source_key) {
@@ -434,6 +444,10 @@ void WorkflowExecutor::followEdges(
       if (!event_name.empty() && edge_event != event_name) {
         continue;
       }
+    } else if (edge_kind == "failure") {
+      if (normalized != "failure" && normalized != "FAILURE") {
+        continue;
+      }
     } else {
       continue;
     }
@@ -452,7 +466,9 @@ void WorkflowExecutor::followEdges(
          {"attempt", cycle}},
         std::nullopt);
     activateNode(detail, target_key);
+    ++followed;
   }
+  return followed;
 }
 
 void WorkflowExecutor::maybeFinishRun(db::WorkflowRunDetail& detail) {
@@ -1284,9 +1300,9 @@ void WorkflowExecutor::executeNode(
   if (type == "NAVIGATION") {
     const auto to_station_id = optionalString(data, "to_station_id");
     const double distance_tolerance =
-        data.value("distance_tolerance", 0.15);
+        data.value("distance_tolerance", 0.04);
     const double heading_tolerance =
-        data.value("heading_tolerance", 0.2);
+        data.value("heading_tolerance", 0.04);
     auto robot_id = optionalString(data, "robot_id");
     if (robot_id.empty()) {
       robot_id = detail.run.context_data.value("current_robot_id", "");
@@ -1772,6 +1788,8 @@ db::WorkflowRunDetail WorkflowExecutor::decideManualConfirmation(
       std::string("manual-decision:") + node_run_id);
   if (approved) {
     followEdges(*detail, node_it->node_key, "success");
+    maybeFinishRun(*detail);
+  } else if (followEdges(*detail, node_it->node_key, "failure") > 0) {
     maybeFinishRun(*detail);
   } else {
     for (auto& other : detail->nodes) {

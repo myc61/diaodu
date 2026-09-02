@@ -170,9 +170,13 @@ upgrade_legacy_database() {
   local has_startup_profiles
   local has_naviai_default
   local supports_ssh_capability
+  local robot_delete_sets_null
+  local nav_tol_defaults
   local needs_0015=false
   local needs_0016=false
   local needs_0017=false
+  local needs_0018=false
+  local needs_0019=false
 
   base_schema="$(compose_psql_value "SELECT COALESCE(to_regclass('dispatch.scenes')::text, '');")"
   [[ "${base_schema}" == "dispatch.scenes" ]] ||
@@ -183,15 +187,23 @@ upgrade_legacy_database() {
     needs_0015=true
     needs_0016=true
     needs_0017=true
+    needs_0018=true
+    needs_0019=true
   else
     has_naviai_default="$(compose_psql_value "SELECT CASE WHEN position('naviai' in COALESCE(column_default, '')) > 0 THEN 'yes' ELSE 'no' END FROM information_schema.columns WHERE table_schema='dispatch' AND table_name='robot_startup_profiles' AND column_name='ssh_username';")"
     [[ "${has_naviai_default}" == "yes" ]] || needs_0016=true
 
     supports_ssh_capability="$(compose_psql_value "SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='dispatch.capability_definitions'::regclass AND conname='capability_definitions_operation_kind_check' AND position('SSH' in pg_get_constraintdef(oid)) > 0) THEN 'yes' ELSE 'no' END;")"
     [[ "${supports_ssh_capability}" == "yes" ]] || needs_0017=true
+
+    robot_delete_sets_null="$(compose_psql_value "SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='dispatch.node_runs'::regclass AND conname='node_runs_assigned_robot_id_fkey' AND position('ON DELETE SET NULL' in pg_get_constraintdef(oid)) > 0) THEN 'yes' ELSE 'no' END;")"
+    [[ "${robot_delete_sets_null}" == "yes" ]] || needs_0018=true
+
+    nav_tol_defaults="$(compose_psql_value "SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM dispatch.capability_definitions WHERE capability_key = 'navigation') THEN 'yes' WHEN EXISTS (SELECT 1 FROM dispatch.capability_definitions WHERE capability_key = 'navigation' AND (COALESCE((parameter_schema#>>'{properties,distance_tolerance,default}')::numeric, -1) IS DISTINCT FROM 0.04 OR COALESCE((parameter_schema#>>'{properties,heading_tolerance,default}')::numeric, -1) IS DISTINCT FROM 0.04 OR COALESCE((protocol_config->>'default_distance_tolerance')::numeric, -1) IS DISTINCT FROM 0.04 OR COALESCE((protocol_config->>'default_heading_tolerance')::numeric, -1) IS DISTINCT FROM 0.04)) THEN 'no' ELSE 'yes' END;")"
+    [[ "${nav_tol_defaults}" == "yes" ]] || needs_0019=true
   fi
 
-  if [[ "${needs_0015}" == false && "${needs_0016}" == false && "${needs_0017}" == false ]]; then
+  if [[ "${needs_0015}" == false && "${needs_0016}" == false && "${needs_0017}" == false && "${needs_0018}" == false && "${needs_0019}" == false ]]; then
     log "数据库结构已是当前版本"
     return
   fi
@@ -200,6 +212,8 @@ upgrade_legacy_database() {
   [[ "${needs_0015}" == true ]] && apply_migration "0015_linked_runs_and_startup_profiles.sql"
   [[ "${needs_0016}" == true ]] && apply_migration "0016_robot_ssh_profiles.sql"
   [[ "${needs_0017}" == true ]] && apply_migration "0017_ssh_capability_kind.sql"
+  [[ "${needs_0018}" == true ]] && apply_migration "0018_robot_delete_run_history.sql"
+  [[ "${needs_0019}" == true ]] && apply_migration "0019_navigation_tolerance_defaults.sql"
 }
 
 ensure_env_file

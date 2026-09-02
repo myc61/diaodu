@@ -17,8 +17,8 @@
 namespace dispatcher::ros {
 
 struct NavigationGoalOptions {
-  double distance_tolerance{0.15};
-  double heading_tolerance{0.2};
+  double distance_tolerance{0.04};
+  double heading_tolerance{0.04};
 };
 
 struct RosCommandEvent {

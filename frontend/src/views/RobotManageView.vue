@@ -30,11 +30,23 @@ import type { RobotStartupProfile } from "../types/workflow";
 const robots = ref<RobotConfig[]>([]);
 const selectedId = ref<string>("");
 const loading = ref(false);
+const savingRobot = ref(false);
+const deletingRobot = ref(false);
+const savingStartupProfile = ref(false);
+const deletingStartupProfile = ref(false);
 const statusMessage = ref("");
 const errorMessage = ref("");
 const isCreating = ref(false);
 const startupProfiles = ref<RobotStartupProfile[]>([]);
 const selectedProfileId = ref("");
+const busy = computed(
+  () =>
+    loading.value ||
+    savingRobot.value ||
+    deletingRobot.value ||
+    savingStartupProfile.value ||
+    deletingStartupProfile.value
+);
 
 const startupForm = reactive({
   name: "",
@@ -42,8 +54,8 @@ const startupForm = reactive({
   enabled: true,
   ssh_port: 22,
   ssh_username: "naviai",
-  credential_reference: "/run/secrets/robot_ssh_key",
-  known_hosts_reference: "/run/secrets/robot_known_hosts",
+  credential_reference: "/etc/dispatcher/ssh/robot_ssh_key",
+  known_hosts_reference: "/etc/dispatcher/ssh/robot_known_hosts",
   timeout_ms: 120000,
   steps_text: JSON.stringify(
     [
@@ -144,8 +156,8 @@ function resetStartupForm(): void {
   startupForm.enabled = true;
   startupForm.ssh_port = 22;
   startupForm.ssh_username = "naviai";
-  startupForm.credential_reference = "/run/secrets/robot_ssh_key";
-  startupForm.known_hosts_reference = "/run/secrets/robot_known_hosts";
+  startupForm.credential_reference = "/etc/dispatcher/ssh/robot_ssh_key";
+  startupForm.known_hosts_reference = "/etc/dispatcher/ssh/robot_known_hosts";
   startupForm.timeout_ms = 120000;
   startupForm.steps_text = JSON.stringify(
     [{
@@ -304,7 +316,7 @@ async function saveStartupProfile(): Promise<void> {
     return;
   }
   try {
-    loading.value = true;
+    savingStartupProfile.value = true;
     const payload = {
       name: startupForm.name.trim(),
       description: startupForm.description,
@@ -339,7 +351,7 @@ async function saveStartupProfile(): Promise<void> {
     errorMessage.value =
       error instanceof Error ? error.message : "启动方案保存失败";
   } finally {
-    loading.value = false;
+    savingStartupProfile.value = false;
   }
 }
 
@@ -351,7 +363,7 @@ async function removeStartupProfile(): Promise<void> {
     return;
   }
   try {
-    loading.value = true;
+    deletingStartupProfile.value = true;
     await deleteRobotStartupProfile(
       selectedId.value,
       selectedProfileId.value
@@ -363,7 +375,7 @@ async function removeStartupProfile(): Promise<void> {
     errorMessage.value =
       error instanceof Error ? error.message : "启动方案删除失败";
   } finally {
-    loading.value = false;
+    deletingStartupProfile.value = false;
   }
 }
 
@@ -380,7 +392,7 @@ async function save(): Promise<void> {
     errorMessage.value = "当前首版契约仅支持 ROS1 Noetic";
     return;
   }
-  loading.value = true;
+  savingRobot.value = true;
   errorMessage.value = "";
   try {
     const payload: RobotUpsertPayload = {
@@ -401,7 +413,7 @@ async function save(): Promise<void> {
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : "保存失败";
   } finally {
-    loading.value = false;
+    savingRobot.value = false;
   }
 }
 
@@ -409,10 +421,12 @@ async function removeRobot(): Promise<void> {
   if (isCreating.value || !selectedId.value) {
     return;
   }
-  if (!window.confirm(`确认删除机器人 ${form.name}？需先移出所有活动场景。`)) {
+  if (!window.confirm(
+      `确认删除机器人 ${form.name}？需先从地图场景解绑，且不能有进行中的流程。历史运行记录会保留。`
+    )) {
     return;
   }
-  loading.value = true;
+  deletingRobot.value = true;
   errorMessage.value = "";
   try {
     await deleteRobotConfig(selectedId.value);
@@ -423,7 +437,7 @@ async function removeRobot(): Promise<void> {
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : "删除失败";
   } finally {
-    loading.value = false;
+    deletingRobot.value = false;
   }
 }
 
@@ -495,12 +509,18 @@ onMounted(() => {
               v-if="!isCreating"
               type="error"
               secondary
-              :disabled="loading"
+              :loading="deletingRobot"
+              :disabled="busy"
               @click="removeRobot"
             >
               删除
             </n-button>
-            <n-button type="primary" :loading="loading" @click="save">
+            <n-button
+              type="primary"
+              :loading="savingRobot"
+              :disabled="busy"
+              @click="save"
+            >
               保存
             </n-button>
           </n-space>
@@ -608,6 +628,8 @@ onMounted(() => {
               size="small"
               type="error"
               secondary
+              :loading="deletingStartupProfile"
+              :disabled="busy"
               @click="removeStartupProfile"
             >
               删除方案
@@ -615,7 +637,8 @@ onMounted(() => {
             <n-button
               size="small"
               type="primary"
-              :loading="loading"
+              :loading="savingStartupProfile"
+              :disabled="busy"
               @click="saveStartupProfile"
             >
               保存方案
@@ -669,7 +692,7 @@ onMounted(() => {
               v-model:value="startupForm.credential_reference"
               :placeholder="selectedStartupProfile?.credential_configured
                 ? '已配置；留空沿用原路径'
-                : '/run/secrets/robot_ssh_key'"
+                : '/etc/dispatcher/ssh/robot_ssh_key'"
             />
           </n-form-item>
           <n-form-item label="known_hosts 路径">
@@ -677,7 +700,7 @@ onMounted(() => {
               v-model:value="startupForm.known_hosts_reference"
               :placeholder="selectedStartupProfile?.known_hosts_configured
                 ? '已配置；留空沿用原路径'
-                : '/run/secrets/robot_known_hosts'"
+                : '/etc/dispatcher/ssh/robot_known_hosts'"
             />
           </n-form-item>
           <n-form-item label="说明">

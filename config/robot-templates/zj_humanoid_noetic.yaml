@@ -39,7 +39,7 @@ interfaces:
     feedback_topic: /zj_humanoid/navigation/navigation/feedback
     result_topic: /zj_humanoid/navigation/navigation/result
     defaults:
-      distance_tolerance: 0.15
-      heading_tolerance: 0.2
+      distance_tolerance: 0.04
+      heading_tolerance: 0.04
   relocalization: {}
   additional_capabilities: []

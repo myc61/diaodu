@@ -2,11 +2,13 @@
 
 #include <boost/asio/connect.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/steady_timer.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/websocket.hpp>
 #include <boost/beast/websocket/stream_base.hpp>
 
 #include <chrono>
+#include <functional>
 #include <system_error>
 #include <utility>
 
@@ -49,8 +51,10 @@ void BeastTransport::start(
 }
 
 void BeastTransport::stop() {
-  stop_requested_ = true;
-  close();
+  stop_requested_.store(true, std::memory_order_release);
+  connected_.store(false, std::memory_order_release);
+  stop_cv_.notify_all();
+  impl_->ioc.stop();
   if (worker_.joinable()) {
     worker_.join();
   }
@@ -68,29 +72,37 @@ bool BeastTransport::sendText(std::string_view payload) {
 }
 
 void BeastTransport::close() {
-  std::lock_guard lock(write_mutex_);
-  if (impl_ == nullptr || impl_->ws == nullptr) {
-    connected_ = false;
+  connected_.store(false, std::memory_order_release);
+  if (impl_ == nullptr) {
     return;
   }
-  beast::error_code ec;
-  impl_->ws->close(websocket::close_code::normal, ec);
-  connected_ = false;
+  impl_->ioc.post([this] {
+    std::lock_guard lock(write_mutex_);
+    if (impl_ == nullptr || impl_->ws == nullptr) {
+      return;
+    }
+    beast::error_code ec;
+    impl_->ws->next_layer().shutdown(tcp::socket::shutdown_both, ec);
+    ec.clear();
+    impl_->ws->next_layer().close(ec);
+  });
 }
 
 void BeastTransport::requestReconnect() {
-  std::lock_guard lock(write_mutex_);
-  connected_ = false;
-  if (impl_ == nullptr || impl_->ws == nullptr) {
+  connected_.store(false, std::memory_order_release);
+  if (impl_ == nullptr) {
     return;
   }
-  // A WebSocket close handshake can itself block on a half-open connection.
-  // Shutting down the TCP layer wakes the worker's blocking read; run() then
-  // publishes the disconnected lifecycle event and reconnects after backoff.
-  beast::error_code ec;
-  impl_->ws->next_layer().shutdown(tcp::socket::shutdown_both, ec);
-  ec.clear();
-  impl_->ws->next_layer().close(ec);
+  impl_->ioc.post([this] {
+    std::lock_guard lock(write_mutex_);
+    if (impl_ == nullptr || impl_->ws == nullptr) {
+      return;
+    }
+    beast::error_code ec;
+    impl_->ws->next_layer().shutdown(tcp::socket::shutdown_both, ec);
+    ec.clear();
+    impl_->ws->next_layer().close(ec);
+  });
 }
 
 bool BeastTransport::connected() const noexcept {
@@ -101,74 +113,121 @@ void BeastTransport::run() {
   while (!stop_requested_) {
     bool was_connected = false;
     std::string disconnect_reason = "disconnected";
+    bool cycle_finished = false;
+    beast::flat_buffer buffer;
     try {
       impl_->ioc.restart();
       tcp::resolver resolver(impl_->ioc);
-      auto const results =
-          resolver.resolve(host_, std::to_string(port_));
-      auto socket = tcp::socket(impl_->ioc);
-      // Avoid multi-minute hangs on unreachable robot IPs (blocks stop/join).
-      beast::error_code connect_ec;
-      socket.open(results.begin()->endpoint().protocol(), connect_ec);
-      if (connect_ec) {
-        throw boost::system::system_error(connect_ec);
-      }
-      ::timeval tv{};
-      tv.tv_sec = 3;
-      tv.tv_usec = 0;
-      ::setsockopt(
-          socket.native_handle(),
-          SOL_SOCKET,
-          SO_SNDTIMEO,
-          &tv,
-          sizeof(tv));
-      ::setsockopt(
-          socket.native_handle(),
-          SOL_SOCKET,
-          SO_RCVTIMEO,
-          &tv,
-          sizeof(tv));
-      socket.connect(results.begin()->endpoint(), connect_ec);
-      if (connect_ec) {
-        throw boost::system::system_error(connect_ec);
-      }
-      auto ws = std::make_unique<websocket::stream<tcp::socket>>(
-          std::move(socket));
-      // Detect half-open TCP connections promptly. ROS pose traffic is
-      // frequent, so an idle connection longer than a few seconds should be
-      // treated as lost rather than staying ONLINE forever.
-      websocket::stream_base::timeout ws_timeout{};
-      ws_timeout.handshake_timeout = std::chrono::seconds(3);
-      ws_timeout.idle_timeout = std::chrono::seconds(3);
-      ws_timeout.keep_alive_pings = true;
-      ws->set_option(ws_timeout);
-      // Autobahn/rosbridge rejects Host without port on non-80/443 ports.
-      const auto host_header = host_ + ":" + std::to_string(port_);
-      ws->handshake(host_header, path_.empty() ? "/" : path_);
-      {
-        std::lock_guard lock(write_mutex_);
-        impl_->ws = std::move(ws);
-        connected_ = true;
-        was_connected = true;
-      }
-      if (on_lifecycle_) {
-        on_lifecycle_(true, "connected");
-      }
+      net::steady_timer connection_timer(impl_->ioc);
+      connection_timer.expires_after(std::chrono::seconds(3));
 
-      beast::flat_buffer buffer;
-      while (!stop_requested_) {
-        beast::error_code ec;
-        impl_->ws->read(buffer, ec);
-        if (ec) {
-          disconnect_reason = ec.message();
-          break;
+      const auto finish_cycle = [&] {
+        if (!cycle_finished) {
+          cycle_finished = true;
+          connection_timer.cancel();
         }
-        const auto data = beast::buffers_to_string(buffer.data());
-        buffer.consume(buffer.size());
-        if (on_message_) {
-          on_message_(data);
+      };
+
+      std::function<void()> read_next;
+      read_next = [&] {
+        if (stop_requested_ || cycle_finished || impl_->ws == nullptr) {
+          finish_cycle();
+          return;
         }
-      }
+        impl_->ws->async_read(
+            buffer,
+            [&, read_next](beast::error_code ec, std::size_t) mutable {
+              if (ec) {
+                disconnect_reason = ec.message();
+                finish_cycle();
+                return;
+              }
+              const auto data = beast::buffers_to_string(buffer.data());
+              buffer.consume(buffer.size());
+              if (on_message_) {
+                on_message_(data);
+              }
+              read_next();
+            });
+      };
+
+      connection_timer.async_wait([&](beast::error_code ec) {
+        if (ec || cycle_finished || stop_requested_) {
+          return;
+        }
+        disconnect_reason = "connection timeout";
+        finish_cycle();
+        impl_->ioc.stop();
+      });
+
+      resolver.async_resolve(
+          host_,
+          std::to_string(port_),
+          [&](beast::error_code ec, tcp::resolver::results_type results) {
+            if (stop_requested_ || cycle_finished) {
+              finish_cycle();
+              return;
+            }
+            if (ec) {
+              disconnect_reason = ec.message();
+              finish_cycle();
+              return;
+            }
+
+            auto ws = std::make_unique<websocket::stream<tcp::socket>>(
+                impl_->ioc);
+            websocket::stream_base::timeout ws_timeout{};
+            ws_timeout.handshake_timeout = std::chrono::seconds(3);
+            ws_timeout.idle_timeout = std::chrono::seconds(3);
+            ws_timeout.keep_alive_pings = true;
+            ws->set_option(ws_timeout);
+            {
+              std::lock_guard lock(write_mutex_);
+              impl_->ws = std::move(ws);
+            }
+
+            net::async_connect(
+                impl_->ws->next_layer(),
+                results,
+                [&](beast::error_code connect_ec, const tcp::endpoint&) {
+                  if (stop_requested_ || cycle_finished) {
+                    finish_cycle();
+                    return;
+                  }
+                  if (connect_ec) {
+                    disconnect_reason = connect_ec.message();
+                    finish_cycle();
+                    return;
+                  }
+                  const auto host_header =
+                      host_ + ":" + std::to_string(port_);
+                  impl_->ws->async_handshake(
+                      host_header,
+                      path_.empty() ? "/" : path_,
+                      [&](beast::error_code handshake_ec) {
+                        if (stop_requested_ || cycle_finished) {
+                          finish_cycle();
+                          return;
+                        }
+                        if (handshake_ec) {
+                          disconnect_reason = handshake_ec.message();
+                          finish_cycle();
+                          return;
+                        }
+                        connection_timer.cancel();
+                        {
+                          std::lock_guard lock(write_mutex_);
+                          connected_ = true;
+                          was_connected = true;
+                        }
+                        if (on_lifecycle_) {
+                          on_lifecycle_(true, "connected");
+                        }
+                        read_next();
+                      });
+                });
+          });
+      impl_->ioc.run();
     } catch (const std::exception& ex) {
       disconnect_reason = ex.what();
       was_connected = was_connected || connected_;
@@ -189,7 +248,10 @@ void BeastTransport::run() {
     if (stop_requested_) {
       break;
     }
-    std::this_thread::sleep_for(std::chrono::seconds(2));
+    std::unique_lock lock(stop_mutex_);
+    stop_cv_.wait_for(lock, std::chrono::seconds(2), [this] {
+      return stop_requested_.load(std::memory_order_acquire);
+    });
   }
 }
 

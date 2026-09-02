@@ -767,10 +767,11 @@ void registerRoutes() {
                     .y = cached->pose.y,
                     .yaw = cached->pose.yaw,
                 });
-            // Draw when affiliated + we have pixel coords. Stale poses still
-            // render (frontend can dim); outside-map poses are still useful.
+            // Draw whenever this scene's map can place the pose. Stale poses
+            // stay visible; the frontend uses a solid muted color instead of
+            // hiding or fading the icon.
             const bool drawable =
-                !stale && cached->scene_map_matched && pixel.has_value() &&
+                cached->scene_map_matched && pixel.has_value() &&
                 robot->current_scene_id == scene->id &&
                 robot->current_map_version_id == map->id;
             robot_json["drawable"] = drawable;
@@ -1379,6 +1380,12 @@ void registerRoutes() {
          std::function<void(const HttpResponsePtr&)>&& callback,
          const std::string& id) {
         try {
+          if (appState().repository->robotHasActiveScene(id)) {
+            callback(errorResponse(
+                "robot still belongs to an active scene; remove it from the scene first",
+                409));
+            return;
+          }
           appState().robot_runtime->dropRobot(id);
           if (!appState().repository->deleteRobot(id)) {
             callback(errorResponse("robot not found", 404));
@@ -1879,9 +1886,9 @@ void registerRoutes() {
           const double y = json.at("y").get<double>();
           const double yaw = json.value("yaw", 0.0);
           const double distance_tolerance =
-              json.value("distance_tolerance", 0.15);
+              json.value("distance_tolerance", 0.04);
           const double heading_tolerance =
-              json.value("heading_tolerance", 0.2);
+              json.value("heading_tolerance", 0.04);
           if (!std::isfinite(distance_tolerance) ||
               distance_tolerance <= 0.0 ||
               !std::isfinite(heading_tolerance) ||
@@ -2189,6 +2196,16 @@ void registerRoutes() {
     }
     for (const auto& edge : edges) {
       const auto kind = edge.value("edge_kind", edge.value("label", "success"));
+      if (kind == "failure" || kind == "FAILURE") {
+        const auto source_id = edge.value("source", "");
+        const auto source_it = nodes_by_id.find(source_id);
+        if (source_it == nodes_by_id.end()) {
+          return "failure edge references unknown source node";
+        }
+        if (source_it->second.value("type", "") == "START") {
+          return "START node cannot emit failure edges; use a success edge";
+        }
+      }
       if (kind == "event" || kind == "EVENT") {
         const auto event_name = edge.value(
             "event_name",

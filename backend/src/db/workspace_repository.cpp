@@ -484,7 +484,7 @@ CommandRunRecord readCommandRun(const pqxx::row& row) {
       .command_id = row["command_id"].as<std::string>(),
       .workflow_run_id = row["workflow_run_id"].as<std::string>(),
       .node_run_id = row["node_run_id"].as<std::string>(),
-      .robot_id = row["robot_id"].as<std::string>(),
+      .robot_id = optionalText(row["robot_id"]).value_or(""),
       .capability_definition_id =
           optionalText(row["capability_definition_id"]),
       .operation_kind = row["operation_kind"].as<std::string>(),
@@ -1068,6 +1068,17 @@ RobotRecord WorkspaceRepository::updateRobot(
   return *updated;
 }
 
+bool WorkspaceRepository::robotHasActiveScene(const std::string& id) {
+  auto connection = pool_.acquire();
+  pqxx::work tx(*connection);
+  const auto active = tx.exec_params(
+      "SELECT 1 FROM dispatch.scene_robots "
+      "WHERE robot_id = $1::uuid AND valid_to IS NULL",
+      id);
+  tx.commit();
+  return !active.empty();
+}
+
 bool WorkspaceRepository::deleteRobot(const std::string& id) {
   auto connection = pool_.acquire();
   pqxx::work tx(*connection);
@@ -1078,6 +1089,28 @@ bool WorkspaceRepository::deleteRobot(const std::string& id) {
   if (!active.empty()) {
     throw std::runtime_error(
         "robot still belongs to an active scene; remove it from the scene first");
+  }
+  const auto active_nodes = tx.exec_params(
+      "SELECT 1 FROM dispatch.node_runs "
+      "WHERE assigned_robot_id = $1::uuid "
+      "AND state NOT IN ('SUCCEEDED', 'FAILED', 'CANCELLED') "
+      "LIMIT 1",
+      id);
+  if (!active_nodes.empty()) {
+    throw std::runtime_error(
+        "robot still has in-progress workflow node runs; "
+        "wait for them to finish or cancel the run first");
+  }
+  const auto active_commands = tx.exec_params(
+      "SELECT 1 FROM dispatch.command_runs "
+      "WHERE robot_id = $1::uuid "
+      "AND state IN ('CREATED', 'DISPATCHING', 'ACTIVE', 'UNCERTAIN') "
+      "LIMIT 1",
+      id);
+  if (!active_commands.empty()) {
+    throw std::runtime_error(
+        "robot still has in-progress command runs; "
+        "wait for them to finish or cancel the run first");
   }
   const auto result = tx.exec_params(
       "DELETE FROM dispatch.robots WHERE id = $1::uuid RETURNING id",

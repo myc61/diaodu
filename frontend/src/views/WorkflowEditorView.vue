@@ -1,7 +1,13 @@
 <script setup lang="ts">
 import { Background } from "@vue-flow/background";
 import { Controls } from "@vue-flow/controls";
-import { VueFlow, addEdge, type Connection } from "@vue-flow/core";
+import {
+  MarkerType,
+  VueFlow,
+  addEdge,
+  type Connection,
+  type NodeTypesObject
+} from "@vue-flow/core";
 import {
   Play,
   Plus,
@@ -17,6 +23,7 @@ import { useRouter } from "vue-router";
 import { startWorkflowRun } from "../api/runs";
 import { listScenes } from "../api/workspace";
 import SchemaForm from "../components/SchemaForm.vue";
+import WorkflowGraphNode from "../components/WorkflowGraphNode.vue";
 import {
   createWorkflow,
   deleteWorkflow,
@@ -46,10 +53,18 @@ type FlowEdge = {
   id: string;
   source: string;
   target: string;
+  sourceHandle?: string | null;
+  targetHandle?: string | null;
   label?: string;
   animated?: boolean;
   data?: Record<string, unknown>;
   selected?: boolean;
+  markerEnd?: { type: MarkerType; color?: string };
+  style?: Record<string, string>;
+};
+
+const nodeTypes: NodeTypesObject = {
+  dispatch: WorkflowGraphNode
 };
 
 type GraphSnapshot = {
@@ -82,7 +97,7 @@ let dragStartSnapshot: GraphSnapshot | null = null;
 const statusMessage = ref("");
 const errorMessage = ref("");
 const loading = ref(false);
-const connectEdgeKind = ref<"success" | "event">("success");
+const connectEdgeKind = ref<"success" | "event" | "failure">("success");
 const connectEventName = ref("");
 /** Default robot used when adding NAVIGATION nodes from the palette. */
 const navRobotId = ref("");
@@ -221,14 +236,14 @@ function defaultStartEnd(): FlowNode[] {
   return [
     {
       id: "start",
-      type: "input",
+      type: "dispatch",
       position: { x: 80, y: 160 },
       data: { label: "START", nodeType: "START" },
       label: "START"
     },
     {
       id: "end",
-      type: "output",
+      type: "dispatch",
       position: { x: 640, y: 160 },
       data: { label: "END", nodeType: "END" },
       label: "END"
@@ -324,6 +339,44 @@ function toApiGraph() {
   };
 }
 
+function edgePresentation(kind: string, eventName = ""): {
+  label: string;
+  animated: boolean;
+  style: { stroke: string };
+  sourceHandle: string;
+  targetHandle: string;
+  markerEnd: { type: MarkerType; color: string };
+} {
+  if (kind === "event") {
+    return {
+      label: `event:${eventName}`,
+      animated: true,
+      style: { stroke: "#7e57c2" },
+      sourceHandle: "success",
+      targetHandle: "in",
+      markerEnd: { type: MarkerType.ArrowClosed, color: "#7e57c2" }
+    };
+  }
+  if (kind === "failure") {
+    return {
+      label: "失败",
+      animated: false,
+      style: { stroke: "#b03a2e" },
+      sourceHandle: "failure",
+      targetHandle: "in",
+      markerEnd: { type: MarkerType.ArrowClosed, color: "#b03a2e" }
+    };
+  }
+  return {
+    label: "成功",
+    animated: false,
+    style: { stroke: "#238636" },
+    sourceHandle: "success",
+    targetHandle: "in",
+    markerEnd: { type: MarkerType.ArrowClosed, color: "#238636" }
+  };
+}
+
 function fromApiGraph(graph: {
   nodes?: Array<Record<string, unknown>>;
   edges?: Array<Record<string, unknown>>;
@@ -347,8 +400,7 @@ function fromApiGraph(graph: {
     const label = String(data.label ?? type);
     return {
       id: String(node.id),
-      type:
-        type === "START" ? "input" : type === "END" ? "output" : "default",
+      type: "dispatch",
       position: (node.position as { x: number; y: number }) ?? { x: 0, y: 0 },
       data: { ...data, nodeType: type, label },
       label
@@ -357,12 +409,17 @@ function fromApiGraph(graph: {
   edges.value = rawEdges.map((edge) => {
     const kind = String(edge.edge_kind ?? "success");
     const eventName = String(edge.event_name ?? "");
+    const visual = edgePresentation(kind, eventName);
     return {
       id: String(edge.id),
       source: String(edge.source),
       target: String(edge.target),
-      label: kind === "event" ? `event:${eventName}` : "success",
-      animated: kind === "event",
+      sourceHandle: visual.sourceHandle,
+      targetHandle: visual.targetHandle,
+      label: visual.label,
+      animated: visual.animated,
+      style: visual.style,
+      markerEnd: visual.markerEnd,
       data: { edge_kind: kind, event_name: eventName }
     };
   });
@@ -637,8 +694,7 @@ function addNode(
     ...nodes.value,
     {
       id,
-      type:
-        nodeType === "START" ? "input" : nodeType === "END" ? "output" : "default",
+      type: "dispatch",
       position: {
         x: 220 + (count % 4) * 48,
         y: 80 + count * 40
@@ -754,8 +810,8 @@ function addNavigationNode(toStationId: string, toName: string): void {
   addNode("NAVIGATION", `${robotName}→${toName}`, {
     robot_id: navRobotId.value,
     to_station_id: toStationId,
-    distance_tolerance: 0.15,
-    heading_tolerance: 0.2,
+    distance_tolerance: 0.04,
+    heading_tolerance: 0.04,
     label: `${robotName}→${toName}`
   });
   errorMessage.value = "";
@@ -1061,8 +1117,18 @@ function updateSelectedDelay(value: number): void {
   nodes.value = [...nodes.value];
 }
 
+function resolveConnectKind(connection: Connection): "success" | "event" | "failure" {
+  if (connection.sourceHandle === "failure") {
+    return "failure";
+  }
+  if (connectEdgeKind.value === "event") {
+    return "event";
+  }
+  return "success";
+}
+
 function handleConnect(connection: Connection): void {
-  const kind = connectEdgeKind.value;
+  const kind = resolveConnectKind(connection);
   const eventName =
     kind === "event"
       ? connectEventName.value || triggerEventName.value
@@ -1071,12 +1137,15 @@ function handleConnect(connection: Connection): void {
     errorMessage.value = "事件边需要事件名";
     return;
   }
+  const sourceNode = nodes.value.find((node) => node.id === connection.source);
+  if (
+    sourceNode?.data?.nodeType === "START" &&
+    (kind === "event" || kind === "failure")
+  ) {
+    errorMessage.value = "START 只能使用成功边启动首个节点";
+    return;
+  }
   if (kind === "event") {
-    const sourceNode = nodes.value.find((node) => node.id === connection.source);
-    if (sourceNode?.data?.nodeType === "START") {
-      errorMessage.value = "START 只能使用成功边启动首个节点";
-      return;
-    }
     if (sourceNode && ["ROBOT_CAPABILITY", "STATION_ACTION"].includes(
       String(sourceNode.data?.nodeType ?? "")
     )) {
@@ -1092,13 +1161,18 @@ function handleConnect(connection: Connection): void {
       }
     }
   }
+  const visual = edgePresentation(kind, eventName);
   recordGraphMutation();
   edges.value = addEdge(
     {
       ...connection,
       id: uid("e"),
-      label: kind === "event" ? `event:${eventName}` : "success",
-      animated: kind === "event",
+      sourceHandle: visual.sourceHandle,
+      targetHandle: visual.targetHandle,
+      label: visual.label,
+      animated: visual.animated,
+      style: visual.style,
+      markerEnd: visual.markerEnd,
       data: { edge_kind: kind, event_name: eventName }
     },
     edges.value
@@ -1365,6 +1439,26 @@ onBeforeUnmount(() => {
     <div class="workflow-body">
       <aside class="workflow-palette">
         <h3>场景资产</h3>
+        <section class="connect-mode">
+          <h4>连线</h4>
+          <p class="hint-text">
+            服务/动作节点底部<strong>绿点</strong>拉成功边，右侧<strong>红点</strong>拉失败边。
+            START 只有成功边。
+          </p>
+          <label>
+            <input v-model="connectEdgeKind" type="radio" value="success" />
+            成功边（绿点）
+          </label>
+          <label>
+            <input v-model="connectEdgeKind" type="radio" value="event" />
+            事件边（绿点）
+          </label>
+          <input
+            v-if="connectEdgeKind === 'event'"
+            v-model="connectEventName"
+            placeholder="边事件名"
+          />
+        </section>
         <p class="hint-text">
           从地图场景加载机器人、点位与点位动作；拖入画布后连线。动作底层为
           ROS service/action 能力模板。
@@ -1548,29 +1642,13 @@ onBeforeUnmount(() => {
             </button>
           </label>
         </section>
-
-        <section>
-          <h4>连线模式</h4>
-          <label>
-            <input v-model="connectEdgeKind" type="radio" value="success" />
-            成功边
-          </label>
-          <label>
-            <input v-model="connectEdgeKind" type="radio" value="event" />
-            事件边
-          </label>
-          <input
-            v-if="connectEdgeKind === 'event'"
-            v-model="connectEventName"
-            placeholder="边事件名"
-          />
-        </section>
       </aside>
 
       <div class="workflow-canvas">
         <VueFlow
           v-model:nodes="nodes"
           v-model:edges="edges"
+          :node-types="nodeTypes"
           fit-view-on-init
           @connect="handleConnect"
           @node-click="onNodeClick"
@@ -1631,7 +1709,7 @@ onBeforeUnmount(() => {
             <label>
               距离容差 (m)
               <input
-                :value="Number(selectedNode.data?.distance_tolerance ?? 0.15)"
+                :value="Number(selectedNode.data?.distance_tolerance ?? 0.04)"
                 type="number"
                 min="0.001"
                 step="0.01"
@@ -1641,7 +1719,7 @@ onBeforeUnmount(() => {
             <label>
               朝向容差 (rad)
               <input
-                :value="Number(selectedNode.data?.heading_tolerance ?? 0.2)"
+                :value="Number(selectedNode.data?.heading_tolerance ?? 0.04)"
                 type="number"
                 min="0.001"
                 step="0.01"
@@ -1913,7 +1991,8 @@ onBeforeUnmount(() => {
 
         <h3>说明</h3>
         <p class="hint-text">
-          导航须指定机器人与目标点。事件来自能力「事件定义」或点位完成事件名：
+          导航须指定机器人与目标点。服务/动作节点右侧红点拉出失败边；
+          失败且重试耗尽后走该边，没有失败边则整次运行 FAILED。事件来自能力「事件定义」或点位完成事件名：
           RESULT/FEEDBACK 条件满足后可走事件边、唤醒 EVENT_WAIT，或启动
           trigger_type=EVENT 的已发布流程（流程级填写同名事件）。
         </p>
@@ -2064,6 +2143,28 @@ onBeforeUnmount(() => {
   color: var(--muted);
 }
 
+.connect-mode {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0 0 10px;
+  padding: 0 0 10px;
+  border-bottom: 1px solid var(--line);
+  background: #fff;
+}
+
+.connect-mode h4 {
+  margin-top: 0;
+}
+
+.connect-mode label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 12px;
+}
+
 .palette-item {
   display: grid;
   width: 100%;
@@ -2100,6 +2201,16 @@ onBeforeUnmount(() => {
   border-radius: 8px;
   background: #e7eee9;
   overflow: hidden;
+}
+
+.workflow-canvas :deep(.vue-flow__node-dispatch) {
+  padding: 0;
+  border: none;
+  background: transparent;
+  width: auto;
+  font-size: inherit;
+  text-align: left;
+  box-shadow: none;
 }
 
 .inline-add {

@@ -4,32 +4,59 @@ import type {
   RobotStartupProfilePayload
 } from "../types/workflow";
 
+const REQUEST_TIMEOUT_MS = 15_000;
+
 async function requestJson<T>(
   path: string,
   init?: RequestInit,
   signal?: AbortSignal
 ): Promise<T> {
-  const response = await fetch(path, {
-    ...init,
-    headers: {
-      Accept: "application/json",
-      ...(init?.headers ?? {})
-    },
-    signal
-  });
-  if (!response.ok) {
-    let detail = response.statusText;
-    try {
-      const body = (await response.json()) as { error?: string };
-      if (body.error) {
-        detail = body.error;
-      }
-    } catch {
-      // ignore
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeoutId = globalThis.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, REQUEST_TIMEOUT_MS);
+  const abortRequest = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) {
+      controller.abort();
+    } else {
+      signal.addEventListener("abort", abortRequest, { once: true });
     }
-    throw new Error(detail || `request failed: ${response.status}`);
   }
-  return (await response.json()) as T;
+
+  try {
+    const response = await fetch(path, {
+      ...init,
+      headers: {
+        Accept: "application/json",
+        ...(init?.headers ?? {})
+      },
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      let detail = response.statusText;
+      try {
+        const body = (await response.json()) as { error?: string };
+        if (body.error) {
+          detail = body.error;
+        }
+      } catch {
+        // ignore
+      }
+      throw new Error(detail || `request failed: ${response.status}`);
+    }
+    return (await response.json()) as T;
+  } catch (error) {
+    if (timedOut) {
+      throw new Error("请求超时，请检查 Dispatcher 服务状态");
+    }
+    throw error;
+  } finally {
+    globalThis.clearTimeout(timeoutId);
+    signal?.removeEventListener("abort", abortRequest);
+  }
 }
 
 export function listRobotConfigs(

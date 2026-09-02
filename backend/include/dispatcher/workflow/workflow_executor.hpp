@@ -12,6 +12,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <chrono>
+#include <cstddef>
 #include <functional>
 #include <queue>
 #include <string>
@@ -74,7 +75,7 @@ class WorkflowExecutor {
       int retry_delay_ms,
       const std::vector<EventSpec>& event_specs,
       nlohmann::json output_context);
-  void followEdges(
+  std::size_t followEdges(
       db::WorkflowRunDetail& detail,
       const std::string& source_key,
       const std::string& edge_kind,

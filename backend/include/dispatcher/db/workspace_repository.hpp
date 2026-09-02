@@ -396,6 +396,7 @@ class WorkspaceRepository {
   [[nodiscard]] RobotRecord updateRobot(
       const std::string& id,
       const RobotUpsertRequest& request);
+  [[nodiscard]] bool robotHasActiveScene(const std::string& id);
   bool deleteRobot(const std::string& id);
   [[nodiscard]] std::vector<RobotStartupProfileRecord>
   listRobotStartupProfiles(const std::string& robot_id);

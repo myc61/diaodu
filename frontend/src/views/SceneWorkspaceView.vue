@@ -61,8 +61,8 @@ const goalWorld = ref<WorldPose | null>(null);
 const selectedNavRobotId = ref("");
 const showConfirm = ref(false);
 const showPointPanel = ref(false);
-const distanceTolerance = ref(0.15);
-const headingTolerance = ref(0.2);
+const distanceTolerance = ref(0.04);
+const headingTolerance = ref(0.04);
 const pointEditMode = ref<"position" | "actions" | "all">("all");
 const pointContextMenu = ref<{
   pointId: string;
@@ -70,6 +70,8 @@ const pointContextMenu = ref<{
   clientY: number;
 } | null>(null);
 const yawDegrees = ref(0);
+const pendingPointName = ref("P1");
+const creatingPoint = ref(false);
 const newSceneName = ref("");
 const yamlFile = ref<File | null>(null);
 const pgmFile = ref<File | null>(null);
@@ -162,7 +164,8 @@ const inspectorPinned = computed(
     inspectorMode.value === "pointEdit" ||
     inspectorMode.value === "bind" ||
     inspectorMode.value === "robot" ||
-    toolMode.value === "navigate"
+    toolMode.value === "navigate" ||
+    toolMode.value === "place"
 );
 
 const inspectorOpen = computed(
@@ -402,7 +405,9 @@ async function refreshWorkspace(): Promise<void> {
       };
     } else {
       workspace.value = next;
-      selectedRobotIds.value = next.robots.map((robot) => robot.id);
+      if (!showBindPanel.value) {
+        selectedRobotIds.value = next.robots.map((robot) => robot.id);
+      }
     }
     if (!selectedNavRobotId.value && next.robots.length > 0) {
       selectedNavRobotId.value = next.robots[0].id;
@@ -641,6 +646,36 @@ async function handleSaveRobots(): Promise<void> {
   }
 }
 
+async function handleUnbindRobot(robotId: string): Promise<void> {
+  if (!selectedSceneId.value) {
+    return;
+  }
+  const robotName =
+    sceneRobots.value.find((robot) => robot.id === robotId)?.name ?? "机器人";
+  const remaining = sceneRobots.value
+    .map((robot) => robot.id)
+    .filter((id) => id !== robotId);
+  try {
+    await updateSceneRobots(selectedSceneId.value, remaining);
+    if (selectedInspectRobotId.value === robotId) {
+      selectedInspectRobotId.value = "";
+    }
+    if (selectedNavRobotId.value === robotId) {
+      selectedNavRobotId.value = remaining[0] ?? "";
+    }
+    selectedRobotIds.value = remaining;
+    await refreshWorkspace();
+    statusMessage.value =
+      remaining.length > 0
+        ? `已从本场景解绑 ${robotName}`
+        : `已解绑 ${robotName}，本场景已无在场机器人`;
+    errorMessage.value = "";
+  } catch (error) {
+    errorMessage.value =
+      error instanceof Error ? error.message : "解绑失败";
+  }
+}
+
 async function onClickPixel(payload: { x: number; y: number }): Promise<void> {
   pointContextMenu.value = null;
   if (!activeMap.value || !selectedSceneId.value) {
@@ -662,21 +697,12 @@ async function onClickPixel(payload: { x: number; y: number }): Promise<void> {
     if (toolMode.value !== "place") {
       return;
     }
-    const generatedName = nextPointName();
-    const created = await createMapPoint({
-      scene_id: selectedSceneId.value,
-      map_version_id: activeMap.value.id,
-      name: generatedName,
-      x: world.x,
-      y: world.y,
-      yaw: (yawDegrees.value * Math.PI) / 180
-    });
-    selectedPointId.value = created.id;
-    showPointPanel.value = false;
-    editingPoint.value = null;
-    selectedInspectRobotId.value = "";
-    await refreshWorkspace();
-    statusMessage.value = `已添加 ${created.name} · 双击点位可配置动作`;
+    goalPixel.value = payload;
+    goalWorld.value = world;
+    if (!pendingPointName.value.trim()) {
+      pendingPointName.value = nextPointName();
+    }
+    statusMessage.value = "已选位置，右侧确认后才会添加点位";
     errorMessage.value = "";
   } catch (error) {
     errorMessage.value =
@@ -701,15 +727,64 @@ function onSelectPoint(pointId: string): void {
   statusMessage.value = "已选中点位 · 双击打开配置";
 }
 
+function clearPlacementPreview(): void {
+  if (toolMode.value === "place") {
+    goalPixel.value = null;
+    goalWorld.value = null;
+  }
+}
+
 function setTool(mode: "browse" | "place" | "navigate"): void {
   toolMode.value = mode;
   showBindPanel.value = false;
+  goalPixel.value = null;
+  goalWorld.value = null;
   if (mode === "place") {
-    statusMessage.value = "添加点位：在地图空白处单击放置";
+    pendingPointName.value = nextPointName();
+    statusMessage.value = "添加点位：在地图上单击选位置，右侧确认后才会创建";
   } else if (mode === "navigate") {
     statusMessage.value = "导航：在地图上单击目标点";
   } else {
     statusMessage.value = "";
+  }
+}
+
+async function confirmPlacePoint(): Promise<void> {
+  if (
+    !selectedSceneId.value ||
+    !activeMap.value ||
+    !goalWorld.value ||
+    toolMode.value !== "place"
+  ) {
+    errorMessage.value = "请先在地图上单击选择点位位置";
+    return;
+  }
+  const name = pendingPointName.value.trim() || nextPointName();
+  try {
+    creatingPoint.value = true;
+    const created = await createMapPoint({
+      scene_id: selectedSceneId.value,
+      map_version_id: activeMap.value.id,
+      name,
+      x: goalWorld.value.x,
+      y: goalWorld.value.y,
+      yaw: (yawDegrees.value * Math.PI) / 180
+    });
+    selectedPointId.value = created.id;
+    showPointPanel.value = false;
+    editingPoint.value = null;
+    selectedInspectRobotId.value = "";
+    goalPixel.value = null;
+    goalWorld.value = null;
+    await refreshWorkspace();
+    pendingPointName.value = nextPointName();
+    statusMessage.value = `已添加 ${created.name} · 可继续点地图添加下一个，或 Esc 退出`;
+    errorMessage.value = "";
+  } catch (error) {
+    errorMessage.value =
+      error instanceof Error ? error.message : "添加点位失败";
+  } finally {
+    creatingPoint.value = false;
   }
 }
 
@@ -1176,8 +1251,16 @@ function onDocumentKeyDown(event: KeyboardEvent): void {
   }
   closePointContextMenu();
   showConfirm.value = false;
+  if (toolMode.value === "place" && goalPixel.value) {
+    goalPixel.value = null;
+    goalWorld.value = null;
+    statusMessage.value = "已取消本次点位，可重新单击地图或再按 Esc 退出";
+    return;
+  }
   if (toolMode.value !== "browse") {
     toolMode.value = "browse";
+    goalPixel.value = null;
+    goalWorld.value = null;
     statusMessage.value = "已退出地图工具";
   }
 }
@@ -1381,7 +1464,7 @@ onBeforeUnmount(() => {
           </button>
         </div>
 
-        <p v-if="toolMode === 'place'" class="canvas-hint">单击地图空白处放置点位 · Esc/再点按钮退出</p>
+        <p v-if="toolMode === 'place'" class="canvas-hint">单击地图选择位置，右侧确认后添加 · Esc 取消/退出</p>
         <p v-else-if="toolMode === 'navigate'" class="canvas-hint">单击地图选择导航目标</p>
         <p v-else-if="guideStep === 'bind'" class="canvas-hint">先绑定机器人到本场景，才能显示位姿并导航</p>
       </div>
@@ -1571,7 +1654,16 @@ onBeforeUnmount(() => {
                 </dd>
               </div>
             </dl>
-            <button type="button" class="ghost-button" @click="clearInspector">关闭</button>
+            <div class="inspector-hero-actions">
+              <button
+                type="button"
+                class="danger-button"
+                @click="handleUnbindRobot(selectedInspectRobot.id)"
+              >
+                解绑
+              </button>
+              <button type="button" class="ghost-button" @click="clearInspector">关闭</button>
+            </div>
           </div>
         </template>
 
@@ -1661,6 +1753,13 @@ onBeforeUnmount(() => {
                     {{ robot.name }}
                     <small>{{ robotPoseHint(robot) }}</small>
                   </button>
+                  <button
+                    type="button"
+                    class="compact-danger"
+                    @click.stop="handleUnbindRobot(robot.id)"
+                  >
+                    解绑
+                  </button>
                 </li>
               </ul>
             </div>
@@ -1688,6 +1787,37 @@ onBeforeUnmount(() => {
               </ul>
             </div>
 
+            <div v-if="toolMode === 'place'" class="inspector-section">
+              <h3>添加点位</h3>
+              <p v-if="!goalWorld" class="hint-text">先在地图上单击选择位置</p>
+              <label class="inspector-form">
+                名称
+                <input v-model="pendingPointName" type="text" />
+              </label>
+              <label class="inspector-form">
+                yaw (deg)
+                <input v-model.number="yawDegrees" type="number" step="1" />
+              </label>
+              <p v-if="goalWorld" class="coord-readout">
+                x={{ goalWorld.x.toFixed(3) }}, y={{ goalWorld.y.toFixed(3) }}
+              </p>
+              <button
+                class="primary-button"
+                type="button"
+                :disabled="!goalWorld || creatingPoint"
+                @click="confirmPlacePoint"
+              >
+                确认添加
+              </button>
+              <button
+                class="ghost-button"
+                type="button"
+                :disabled="!goalWorld"
+                @click="clearPlacementPreview"
+              >
+                取消本次
+              </button>
+            </div>
             <div v-if="toolMode === 'navigate'" class="inspector-section">
               <h3>导航</h3>
               <label class="inspector-form">

@@ -226,7 +226,6 @@ function redrawOverlays(): void {
   if (props.showRobots) {
     for (const robot of props.robots) {
       if (
-        !robot.drawable ||
         !robot.pose ||
         robot.pose.pixel_x === null ||
         robot.pose.pixel_y === null
@@ -236,27 +235,20 @@ function redrawOverlays(): void {
       const selected = robot.id === props.selectedRobotId;
       const stale = Boolean(robot.pose.stale) || !robot.drawable;
       const size = selected ? 18 : 14;
-      const fill = stale
+      const stroke = stale
         ? selected
-          ? "#b08968"
-          : "#7a8a86"
+          ? "#c45c26"
+          : "#4d5c58"
         : selected
           ? "#c45c26"
           : "#1f6b5c";
-      const stroke = stale
-        ? selected
-          ? "#8a6a4a"
-          : "#4d5c58"
-        : selected
-          ? "#8f3d12"
-          : "#10352c";
       const group = new Konva.Group({
         x: robot.pose.pixel_x,
         y: robot.pose.pixel_y,
         rotation: ((robot.pose.pixel_yaw ?? 0) * 180) / Math.PI,
         listening: true,
         name: `robot:${robot.id}`,
-        opacity: stale ? 0.72 : 1
+        opacity: 1
       });
       if (selected) {
         group.add(
@@ -272,26 +264,25 @@ function redrawOverlays(): void {
           })
         );
       }
-      // Square body; short bar marks forward (+x after rotation).
+      // Hollow square so map points under the robot stay visible.
       group.add(
         new Konva.Rect({
           x: -size / 2,
           y: -size / 2,
           width: size,
           height: size,
-          fill,
+          fillEnabled: false,
           stroke,
-          strokeWidth: selected ? 2 : 1,
+          strokeWidth: selected ? 2.5 : 2,
           cornerRadius: 2
         })
       );
       group.add(
-        new Konva.Rect({
-          x: size / 2 - 2,
-          y: -3,
-          width: 8,
-          height: 6,
-          fill: selected ? "#fff4e8" : "#7fd0b5",
+        new Konva.Line({
+          points: [size / 2, 0, size / 2 + 8, 0],
+          stroke,
+          strokeWidth: selected ? 2.5 : 2,
+          lineCap: "round",
           listening: false
         })
       );
@@ -317,6 +308,28 @@ function redrawOverlays(): void {
       });
       overlayLayer.add(group);
     }
+  }
+
+  if (props.goalPixel && props.interactionMode === "place") {
+    overlayLayer.add(
+      new Konva.Circle({
+        x: props.goalPixel.x,
+        y: props.goalPixel.y,
+        radius: 9,
+        stroke: "#1f6b5c",
+        strokeWidth: 2,
+        dash: [5, 4],
+        fillEnabled: false
+      })
+    );
+    overlayLayer.add(
+      new Konva.Circle({
+        x: props.goalPixel.x,
+        y: props.goalPixel.y,
+        radius: 2.5,
+        fill: "#1f6b5c"
+      })
+    );
   }
 
   if (props.goalPixel && props.interactionMode === "navigate") {
