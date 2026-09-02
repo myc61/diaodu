@@ -234,7 +234,10 @@ import_workspace() {
   local tmp
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/diaodu-workspace-import.XXXXXX")"
   trap 'rm -rf "${tmp}"' RETURN
-  tar -C "${tmp}" -xzf "${src}"
+  tar -C "${tmp}" --no-same-owner -xzf "${src}" 2>/dev/null ||
+    tar -C "${tmp}" -xzf "${src}" ||
+    [[ -f "${tmp}/data.json" ]] ||
+    fail "无法解开工作区压缩包 ${src}"
   validate_pack_dir "${tmp}"
 
   log "导入数据库（将替换目标工作区数据）"
@@ -243,13 +246,24 @@ import_workspace() {
 BEGIN;
 SET session_replication_role = replica;
 CREATE TEMP TABLE _workspace_pack (doc jsonb);
-COPY _workspace_pack FROM STDIN;
 SQL
-    cat "${tmp}/data.json"
-    printf '\n'
+    if command -v python3 >/dev/null 2>&1; then
+      python3 - "${tmp}/data.json" <<'PY'
+import json, sys
+raw = json.dumps(
+    json.load(open(sys.argv[1], encoding="utf-8")),
+    ensure_ascii=False,
+    separators=(",", ":"),
+)
+tag = "wsdata"
+while f"${tag}$" in raw:
+    tag += "x"
+print(f"INSERT INTO _workspace_pack(doc) VALUES (${tag}${raw}${tag}$::jsonb);")
+PY
+    else
+      fail "导入需要 python3，用于把 data.json 写成一条 SQL"
+    fi
     cat <<'SQL'
-\.
-
 DO $$
 DECLARE
   pack jsonb;
