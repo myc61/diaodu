@@ -91,11 +91,54 @@ std::string actionMessageGoalId(const nlohmann::json& message) {
   return {};
 }
 
-bool actionResultSucceeded(const nlohmann::json& message) {
-  if (message.contains("status") && message["status"].is_object() &&
-      message["status"].contains("status") &&
-      message["status"]["status"].is_number_integer()) {
-    return message["status"]["status"].get<int>() == 3;
+std::optional<int> actionStatusCode(const nlohmann::json& message) {
+  auto readCode = [](const nlohmann::json& object) -> std::optional<int> {
+    if (object.contains("status") && object["status"].is_number_integer()) {
+      return object["status"].get<int>();
+    }
+    if (object.contains("value") && object["value"].is_number_integer()) {
+      return object["value"].get<int>();
+    }
+    return std::nullopt;
+  };
+
+  if (message.contains("status") && message["status"].is_object()) {
+    if (const auto code = readCode(message["status"]); code.has_value()) {
+      return code;
+    }
+  }
+  if (message.contains("result") && message["result"].is_object()) {
+    const auto& result = message["result"];
+    if (result.contains("status") && result["status"].is_object()) {
+      if (const auto code = readCode(result["status"]); code.has_value()) {
+        return code;
+      }
+    }
+    if (const auto code = readCode(result); code.has_value()) {
+      return code;
+    }
+  }
+  return readCode(message);
+}
+
+// zj_humanoid navigation/Status: Idle=0 Active=1 Running=2 Arrived=3
+// Canceling=4 Cancelled=5 Succeeded=6 Failed=7 Error=8 Aborted=9
+// Generic ROS1 actionlib: SUCCEEDED=3.
+std::optional<bool> actionResultSucceeded(
+    const nlohmann::json& message, bool zj_navigation_status) {
+  const auto code = actionStatusCode(message);
+  if (zj_navigation_status) {
+    if (code.has_value()) {
+      if (*code == 6) {
+        return true;
+      }
+      if (*code == 5 || *code == 7 || *code == 8 || *code == 9) {
+        return false;
+      }
+      return std::nullopt;
+    }
+  } else if (code.has_value()) {
+    return *code == 3;
   }
   if (message.contains("result") && message["result"].is_object()) {
     const auto& result = message["result"];
@@ -103,7 +146,10 @@ bool actionResultSucceeded(const nlohmann::json& message) {
       return result["success"].get<bool>();
     }
   }
-  return message.value("success", false);
+  if (message.contains("success") && message["success"].is_boolean()) {
+    return message["success"].get<bool>();
+  }
+  return zj_navigation_status ? std::nullopt : std::optional<bool>{false};
 }
 
 std::string actionResultError(const nlohmann::json& message) {
@@ -560,7 +606,8 @@ RosDispatchResult RobotRuntime::sendNavigationGoalTracked(
       *robot.nav_action_type,
       goal.command_id,
       msg,
-      std::move(handler));
+      std::move(handler),
+      true);
   if (!dispatched.accepted) {
     ops::OpsLog::instance().error(
         "nav",
@@ -592,7 +639,8 @@ RosDispatchResult RobotRuntime::publishRos1ActionGoal(
     const std::string& action_type,
     const std::string& goal_id,
     const nlohmann::json& action_goal,
-    RosCommandHandler handler) {
+    RosCommandHandler handler,
+    bool zj_navigation_status) {
   if (session_state == nullptr || session_state->session == nullptr) {
     return {.error = "robot session is unavailable"};
   }
@@ -624,12 +672,17 @@ RosDispatchResult RobotRuntime::publishRos1ActionGoal(
         actionTopic(action_name, "/result"),
         actionEnvelopeType(action_type, "Result"),
         {},
-        [session_state, subscriptions, goal_id, handler](
+        [session_state, subscriptions, goal_id, handler, zj_navigation_status](
             std::string_view, const Json& message) {
           if (actionMessageGoalId(message) != goal_id) {
             return;
           }
-          const bool success = actionResultSucceeded(message);
+          const auto outcome =
+              actionResultSucceeded(message, zj_navigation_status);
+          if (!outcome.has_value()) {
+            return;
+          }
+          const bool success = *outcome;
           const auto error = actionResultError(message);
           if (!subscriptions->feedback_id.empty()) {
             (void)session_state->session->unsubscribe(

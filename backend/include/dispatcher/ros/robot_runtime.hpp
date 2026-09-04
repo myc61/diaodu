@@ -129,7 +129,8 @@ class RobotRuntime {
       const std::string& action_type,
       const std::string& goal_id,
       const nlohmann::json& action_goal,
-      RosCommandHandler handler);
+      RosCommandHandler handler,
+      bool zj_navigation_status = false);
 
   concurrency::ExecutionRuntime& execution_;
   db::WorkspaceRepository& repository_;
