@@ -4,6 +4,7 @@
 
 #include <array>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <sstream>
 
@@ -109,6 +110,42 @@ MapImportResult materializeMapFiles(
       .yaml = yaml.yaml,
   };
   return result;
+}
+
+bool ensurePreviewPng(
+    const std::string& preview_path,
+    const std::string& pgm_path) {
+  std::error_code ec;
+  if (!preview_path.empty() &&
+      std::filesystem::exists(preview_path, ec) &&
+      std::filesystem::file_size(preview_path, ec) > 0) {
+    return true;
+  }
+  if (pgm_path.empty()) {
+    return false;
+  }
+  std::ifstream input(pgm_path, std::ios::binary);
+  if (!input) {
+    return false;
+  }
+  std::ostringstream buffer;
+  buffer << input.rdbuf();
+  const auto pgm = parsePgm(buffer.str());
+  if (!pgm.ok) {
+    return false;
+  }
+  const auto preview = encodeGrayscalePng(pgm.image);
+  if (preview.empty()) {
+    return false;
+  }
+  const auto directory = std::filesystem::path(preview_path).parent_path();
+  if (!directory.empty()) {
+    std::filesystem::create_directories(directory, ec);
+    if (ec) {
+      return false;
+    }
+  }
+  return writeBinaryFile(preview_path, preview);
 }
 
 }  // namespace dispatcher::maps

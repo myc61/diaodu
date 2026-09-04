@@ -55,6 +55,27 @@ HttpResponsePtr errorResponse(const std::string& message, int status) {
   return jsonResponse({{"error", message}}, status);
 }
 
+// Reconnects must not run on the Drogon HTTP thread: dropping a rosbridge
+// session joins its worker and can stall workspace/map preview requests.
+void scheduleRefreshConnections() {
+  if (appState().robot_runtime == nullptr) {
+    return;
+  }
+  if (appState().execution != nullptr &&
+      appState().execution->postBlocking([] {
+        try {
+          appState().robot_runtime->refreshConnections();
+        } catch (const std::exception& ex) {
+          ops::OpsLog::instance().warn(
+              "ros",
+              std::string("refreshConnections failed: ") + ex.what());
+        }
+      })) {
+    return;
+  }
+  appState().robot_runtime->refreshConnections();
+}
+
 nlohmann::json mergeAndStoreRobotInterfaceCatalog(
     const std::string& robot_id,
     interfaces::InterfaceCatalog catalog) {
@@ -622,7 +643,7 @@ void registerRoutes() {
          const std::string& id) {
         try {
           appState().repository->deleteScene(id);
-          appState().robot_runtime->refreshConnections();
+          scheduleRefreshConnections();
           callback(jsonResponse({{"deleted", true}, {"id", id}}));
         } catch (const std::exception& ex) {
           const std::string message = ex.what();
@@ -670,7 +691,7 @@ void registerRoutes() {
             robot_ids.push_back(item.get<std::string>());
           }
           appState().repository->replaceSceneRobots(id, robot_ids);
-          appState().robot_runtime->refreshConnections();
+          scheduleRefreshConnections();
           ops::OpsLog::instance().info(
               "scene",
               "scene robots updated",
@@ -1332,7 +1353,7 @@ void registerRoutes() {
           const auto json = nlohmann::json::parse(req->body());
           const auto robot =
               appState().repository->createRobot(parseRobotUpsert(json));
-          appState().robot_runtime->refreshConnections();
+          scheduleRefreshConnections();
           callback(jsonResponse(robotToJson(robot), 201));
         } catch (const std::exception& ex) {
           callback(errorResponse(ex.what(), 400));
@@ -1363,7 +1384,7 @@ void registerRoutes() {
           const auto json = nlohmann::json::parse(req->body());
           const auto robot =
               appState().repository->updateRobot(id, parseRobotUpsert(json));
-          appState().robot_runtime->refreshConnections();
+          scheduleRefreshConnections();
           callback(jsonResponse(robotToJson(robot)));
         } catch (const std::exception& ex) {
           const std::string message = ex.what();
@@ -1855,6 +1876,10 @@ void registerRoutes() {
         const auto map = appState().repository->getMapVersion(id);
         if (!map.has_value()) {
           callback(errorResponse("map not found", 404));
+          return;
+        }
+        if (!maps::ensurePreviewPng(map->preview_path, map->pgm_path)) {
+          callback(errorResponse("preview unavailable", 404));
           return;
         }
         std::ifstream input(map->preview_path, std::ios::binary);

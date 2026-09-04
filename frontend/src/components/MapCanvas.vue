@@ -43,6 +43,7 @@ const emit = defineEmits<{
 
 const containerRef = ref<HTMLDivElement | null>(null);
 const showGrid = ref(props.layerGrid);
+const previewError = ref("");
 
 let stage: Konva.Stage | null = null;
 let mapLayer: Konva.Layer | null = null;
@@ -50,6 +51,8 @@ let overlayLayer: Konva.Layer | null = null;
 let imageNode: Konva.Image | null = null;
 let resizeObserver: ResizeObserver | undefined;
 let pendingImage: HTMLImageElement | null = null;
+let previewRetryTimer: number | undefined;
+let previewAttempts = 0;
 let mounted = false;
 
 function containerSize(): { width: number; height: number } {
@@ -371,6 +374,10 @@ function redrawOverlays(): void {
 }
 
 function cancelPendingImage(): void {
+  if (previewRetryTimer !== undefined) {
+    window.clearTimeout(previewRetryTimer);
+    previewRetryTimer = undefined;
+  }
   if (pendingImage) {
     pendingImage.onload = null;
     pendingImage.onerror = null;
@@ -379,13 +386,32 @@ function cancelPendingImage(): void {
   }
 }
 
+function drawMapPlaceholder(): void {
+  if (!mapLayer || !props.map) {
+    return;
+  }
+  mapLayer.add(
+    new Konva.Rect({
+      width: props.map.width,
+      height: props.map.height,
+      fill: "#c5cfc9",
+      listening: false
+    })
+  );
+  mapLayer.batchDraw();
+}
+
 function loadMapImage(): void {
   if (!mapLayer || !props.map) {
+    previewError.value = "";
     return;
   }
   cancelPendingImage();
   mapLayer.destroyChildren();
   imageNode = null;
+  drawMapPlaceholder();
+  fitToView();
+  redrawOverlays();
   const image = new window.Image();
   pendingImage = image;
   image.onload = () => {
@@ -393,6 +419,9 @@ function loadMapImage(): void {
       return;
     }
     pendingImage = null;
+    previewAttempts = 0;
+    previewError.value = "";
+    mapLayer.destroyChildren();
     imageNode = new Konva.Image({
       image,
       width: props.map.width,
@@ -404,11 +433,23 @@ function loadMapImage(): void {
     redrawOverlays();
   };
   image.onerror = () => {
-    if (pendingImage === image) {
-      pendingImage = null;
+    if (pendingImage !== image) {
+      return;
     }
+    pendingImage = null;
+    previewError.value = "地图底图加载失败，点位仍可用";
+    if (!mounted || previewAttempts >= 5) {
+      return;
+    }
+    previewAttempts += 1;
+    previewRetryTimer = window.setTimeout(() => {
+      if (mounted) {
+        loadMapImage();
+      }
+    }, 800 * previewAttempts);
   };
-  image.src = props.map.preview_url;
+  // Bust cached failed responses after a reconnect stall.
+  image.src = `${props.map.preview_url}?t=${Date.now()}`;
 }
 
 function setupStage(): void {
@@ -486,7 +527,10 @@ function setupStage(): void {
   });
 
   if (props.map) {
+    previewAttempts = 0;
     loadMapImage();
+  } else {
+    previewError.value = "";
   }
 }
 
@@ -548,7 +592,7 @@ onBeforeUnmount(() => {
 });
 
 watch(
-  () => props.map?.id,
+  () => `${props.map?.id ?? ""}:${props.map?.preview_url ?? ""}`,
   () => {
     if (mounted) {
       setupStage();
@@ -617,5 +661,6 @@ defineExpose({
       @contextmenu.prevent
     />
     <div v-if="!map" class="map-empty">请导入地图以开始作业编排</div>
+    <div v-else-if="previewError" class="map-preview-error">{{ previewError }}</div>
   </div>
 </template>

@@ -341,6 +341,16 @@ SQL
 
   log "导入地图文件到 Docker 卷"
   import_maps "${tmp}/maps.tar"
+  if docker compose ps -q dispatcher >/dev/null 2>&1; then
+    local previews
+    previews="$(docker compose exec -T dispatcher \
+      sh -c 'find /var/lib/dispatcher/maps -name preview.png -type f | wc -l' \
+      2>/dev/null || printf '0')"
+    log "地图卷中的 preview.png 数量：${previews}"
+    if [[ "${previews// /}" == "0" ]]; then
+      log "警告：没有预览图。场景页会只有点位没有底图。请确认导入包含 maps.tar，或重新导入。"
+    fi
+  fi
   log "导入完成。刷新页面后应能看到场景、点位和流程。"
   log "机器人连接状态已重置，请确认 IP / rosbridge 后等待重连。"
 }

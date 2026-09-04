@@ -37,4 +37,9 @@ struct MapImportResult {
     std::string_view yaml_text,
     std::string_view pgm_bytes);
 
+// Rebuild preview.png from map.pgm when the preview is missing or empty.
+[[nodiscard]] bool ensurePreviewPng(
+    const std::string& preview_path,
+    const std::string& pgm_path);
+
 }  // namespace dispatcher::maps

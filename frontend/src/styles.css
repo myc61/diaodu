@@ -493,6 +493,22 @@ select:focus-visible {
   font-size: 14px;
 }
 
+.map-preview-error {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  z-index: 4;
+  max-width: min(420px, calc(100% - 24px));
+  padding: 6px 12px;
+  border: 1px solid #d7b08a;
+  border-radius: 8px;
+  background: rgb(255 248 240 / 92%);
+  color: #8a4b16;
+  font-size: 12px;
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+
 .point-context-menu {
   position: fixed;
   z-index: 80;
