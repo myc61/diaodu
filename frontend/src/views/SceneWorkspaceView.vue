@@ -350,9 +350,16 @@ function onDraftCapabilityChange(action: MapPointAction): void {
   action.capability_key = template.capability_key;
   action.motion_ownership = template.motion_ownership;
   action.timeout_ms = template.timeout_ms;
-  // Rematch parameters to the selected capability template schema.
   action.parameters = defaultsFromSchema(template.parameter_schema);
   action.post_navigation_station_id = null;
+}
+
+function onCapabilitySelect(action: MapPointAction, capabilityId: string): void {
+  if (!capabilityId || capabilityId === action.capability_definition_id) {
+    return;
+  }
+  action.capability_definition_id = capabilityId;
+  onDraftCapabilityChange(action);
 }
 
 function validateActionParameters(action: MapPointAction, index: number): string {
@@ -394,20 +401,15 @@ async function refreshWorkspace(): Promise<void> {
     if (!Array.isArray(next.points)) {
       next.points = [];
     }
-    // Keep draft edits; always refresh robots/pose so the map stays live.
+    // Keep the open point editor intact. Replacing workspace/points here
+    // re-renders native <select>s and they jump back to the first option.
     if (showPointPanel.value && workspace.value) {
-      workspace.value = {
-        ...next,
-        points: workspace.value.points.map((local) => {
-          const remote = next.points.find((item) => item.id === local.id);
-          return remote ?? local;
-        })
-      };
-    } else {
-      workspace.value = next;
-      if (!showBindPanel.value) {
-        selectedRobotIds.value = next.robots.map((robot) => robot.id);
-      }
+      workspace.value.robots = next.robots;
+      return;
+    }
+    workspace.value = next;
+    if (!showBindPanel.value) {
+      selectedRobotIds.value = next.robots.map((robot) => robot.id);
     }
     if (!selectedNavRobotId.value && next.robots.length > 0) {
       selectedNavRobotId.value = next.robots[0].id;
@@ -435,6 +437,9 @@ function clonePoint(point: MapPoint): MapPoint {
 
 async function handleActiveMapChange(): Promise<void> {
   if (!selectedSceneId.value || !selectedMapVersionId.value) {
+    return;
+  }
+  if (selectedMapVersionId.value === workspace.value?.scene.active_map_version_id) {
     return;
   }
   const map = mapVersions.value.find(
@@ -1224,6 +1229,9 @@ function startPolling(): void {
     if (document.visibilityState !== "visible") {
       return;
     }
+    if (showPointPanel.value) {
+      return;
+    }
     void refreshWorkspace().catch(() => undefined);
   }, 3000);
 }
@@ -1550,7 +1558,7 @@ onBeforeUnmount(() => {
               </div>
               <div
                 v-for="(action, index) in draftActions"
-                :key="index"
+                :key="action.id || `${action.sequence_no}-${index}`"
                 class="action-card"
               >
                 <header>
@@ -1583,8 +1591,13 @@ onBeforeUnmount(() => {
                 <label>
                   能力模板
                   <select
-                    v-model="action.capability_definition_id"
-                    @change="onDraftCapabilityChange(action)"
+                    :value="action.capability_definition_id"
+                    @change="
+                      onCapabilitySelect(
+                        action,
+                        ($event.target as HTMLSelectElement).value
+                      )
+                    "
                   >
                     <option disabled value="">请选择模板</option>
                     <option

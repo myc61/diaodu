@@ -32,10 +32,67 @@ const fields = computed(() => Object.entries(parsed.value.properties ?? {}));
 const required = computed(() => new Set(parsed.value.required ?? []));
 
 function setField(key: string, value: unknown): void {
+  if (Object.is(props.modelValue[key], value)) {
+    return;
+  }
   emit("update:modelValue", {
     ...props.modelValue,
     [key]: value
   });
+}
+
+function coerceEnumValue(
+  field: { type?: string; enum?: Array<string | number | boolean> },
+  raw: string
+): unknown {
+  const match = (field.enum ?? []).find((item) => String(item) === raw);
+  if (match !== undefined) {
+    return match;
+  }
+  if (raw === "") {
+    return "";
+  }
+  if (field.type === "number" || field.type === "integer") {
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : raw;
+  }
+  if (field.type === "boolean") {
+    return raw === "true";
+  }
+  return raw;
+}
+
+function enumSelectValue(
+  key: string,
+  field: { default?: unknown }
+): string {
+  const current = props.modelValue[key];
+  if (current !== undefined && current !== null && current !== "") {
+    return String(current);
+  }
+  if (field.default !== undefined && field.default !== null) {
+    return String(field.default);
+  }
+  return "";
+}
+
+function onEnumChange(
+  key: string,
+  field: { type?: string; enum?: Array<string | number | boolean> },
+  event: Event
+): void {
+  const raw = (event.target as HTMLSelectElement).value;
+  // Native <select> can emit an empty change when the parent re-renders
+  // and recreates options; do not wipe a value the user already chose.
+  if (raw === "") {
+    const current = props.modelValue[key];
+    if (current !== undefined && current !== null && current !== "") {
+      return;
+    }
+    setField(key, "");
+    return;
+  }
+  setField(key, coerceEnumValue(field, raw));
 }
 
 function asNumber(value: string): number | "" {
@@ -71,18 +128,15 @@ function setJsonField(key: string, text: string, fallback: unknown): void {
       </span>
       <select
         v-if="field.enum?.length"
-        :value="String(modelValue[key] ?? field.default ?? '')"
-        @change="
-          setField(
-            key,
-            field.type === 'number' || field.type === 'integer'
-              ? Number(($event.target as HTMLSelectElement).value)
-              : ($event.target as HTMLSelectElement).value
-          )
-        "
+        :value="enumSelectValue(key, field)"
+        @change="onEnumChange(key, field, $event)"
       >
         <option value="" disabled>请选择</option>
-        <option v-for="item in field.enum" :key="String(item)" :value="String(item)">
+        <option
+          v-for="item in field.enum"
+          :key="`${key}:${String(item)}`"
+          :value="String(item)"
+        >
           {{ item }}
         </option>
       </select>
