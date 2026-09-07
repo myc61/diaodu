@@ -304,13 +304,25 @@ function defaultsFromSchema(
   return values;
 }
 
+function findCapabilityById(id: string): CapabilityTemplate | undefined {
+  if (!id) {
+    return undefined;
+  }
+  return capabilityTemplates.value.find((item) => item.id === id);
+}
+
 function templateOfAction(
   action: MapPointAction
 ): CapabilityTemplate | undefined {
+  const byId = findCapabilityById(action.capability_definition_id ?? "");
+  if (byId) {
+    return byId;
+  }
+  if (!action.capability_key) {
+    return undefined;
+  }
   return capabilityTemplates.value.find(
-    (item) =>
-      item.id === action.capability_definition_id ||
-      item.capability_key === action.capability_key
+    (item) => item.capability_key === action.capability_key
   );
 }
 
@@ -341,11 +353,10 @@ function makeEmptyAction(sequenceNo: number): MapPointAction {
   };
 }
 
-function onDraftCapabilityChange(action: MapPointAction): void {
-  const template = templateOfAction(action);
-  if (!template) {
-    return;
-  }
+function applyCapabilityTemplate(
+  action: MapPointAction,
+  template: CapabilityTemplate
+): void {
   action.capability_definition_id = template.id;
   action.capability_key = template.capability_key;
   action.motion_ownership = template.motion_ownership;
@@ -355,11 +366,17 @@ function onDraftCapabilityChange(action: MapPointAction): void {
 }
 
 function onCapabilitySelect(action: MapPointAction, capabilityId: string): void {
-  if (!capabilityId || capabilityId === action.capability_definition_id) {
+  const template = findCapabilityById(capabilityId);
+  if (!template) {
     return;
   }
-  action.capability_definition_id = capabilityId;
-  onDraftCapabilityChange(action);
+  if (
+    template.id === action.capability_definition_id &&
+    template.capability_key === action.capability_key
+  ) {
+    return;
+  }
+  applyCapabilityTemplate(action, template);
 }
 
 function validateActionParameters(action: MapPointAction, index: number): string {
@@ -1621,6 +1638,7 @@ onBeforeUnmount(() => {
                 <div class="param-block">
                   <h4>执行参数（按模板）</h4>
                   <SchemaForm
+                    :key="action.capability_definition_id || `action-${index}`"
                     :model-value="action.parameters"
                     :schema="templateOfAction(action)?.parameter_schema"
                     @update:model-value="action.parameters = $event"

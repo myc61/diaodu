@@ -50,14 +50,23 @@ const capabilityOptions = computed(() => {
   return business.length > 0 ? business : props.capabilities;
 });
 
+function findCapabilityById(id: string): CapabilityTemplate | undefined {
+  if (!id) {
+    return undefined;
+  }
+  return props.capabilities.find((item) => item.id === id);
+}
+
 function templateOf(action: MapPointAction): CapabilityTemplate | undefined {
-  if (!action.capability_definition_id && !action.capability_key) {
+  const byId = findCapabilityById(action.capability_definition_id ?? "");
+  if (byId) {
+    return byId;
+  }
+  if (!action.capability_key) {
     return undefined;
   }
   return props.capabilities.find(
-    (item) =>
-      item.id === action.capability_definition_id ||
-      item.capability_key === action.capability_key
+    (item) => item.capability_key === action.capability_key
   );
 }
 
@@ -139,17 +148,27 @@ function defaultsFromSchema(
   return values;
 }
 
-function onCapabilityChange(action: MapPointAction): void {
-  const template = templateOf(action);
-  if (!template) {
-    return;
-  }
+function applyCapabilityTemplate(
+  action: MapPointAction,
+  template: CapabilityTemplate
+): void {
   action.capability_definition_id = template.id;
   action.capability_key = template.capability_key;
   action.motion_ownership = template.motion_ownership;
   action.timeout_ms = template.timeout_ms;
   action.parameters = defaultsFromSchema(template.parameter_schema);
   action.post_navigation_station_id = null;
+}
+
+function onCapabilityChange(action: MapPointAction): void {
+  const template = findCapabilityById(action.capability_definition_id ?? "");
+  if (!template) {
+    return;
+  }
+  if (template.capability_key === action.capability_key) {
+    return;
+  }
+  applyCapabilityTemplate(action, template);
 }
 
 function addAction(): void {
