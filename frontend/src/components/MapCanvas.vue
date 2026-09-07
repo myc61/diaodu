@@ -54,6 +54,7 @@ let pendingImage: HTMLImageElement | null = null;
 let previewRetryTimer: number | undefined;
 let previewAttempts = 0;
 let mounted = false;
+let viewAdjusted = false;
 
 function containerSize(): { width: number; height: number } {
   const el = containerRef.value;
@@ -66,7 +67,7 @@ function containerSize(): { width: number; height: number } {
   };
 }
 
-function fitToView(): void {
+function applyFitToView(): void {
   if (!stage || !props.map) {
     return;
   }
@@ -86,6 +87,11 @@ function fitToView(): void {
     y: (height - props.map.height * scale) / 2
   });
   stage.batchDraw();
+}
+
+function fitToView(): void {
+  viewAdjusted = false;
+  applyFitToView();
 }
 
 /** Keep current zoom; pan so (pixelX, pixelY) is centered in the viewport. */
@@ -410,7 +416,9 @@ function loadMapImage(): void {
   mapLayer.destroyChildren();
   imageNode = null;
   drawMapPlaceholder();
-  fitToView();
+  if (!viewAdjusted) {
+    applyFitToView();
+  }
   redrawOverlays();
   const image = new window.Image();
   pendingImage = image;
@@ -429,7 +437,9 @@ function loadMapImage(): void {
     });
     mapLayer.add(imageNode);
     mapLayer.batchDraw();
-    fitToView();
+    if (!viewAdjusted) {
+      applyFitToView();
+    }
     redrawOverlays();
   };
   image.onerror = () => {
@@ -462,6 +472,7 @@ function setupStage(): void {
     return;
   }
   cancelPendingImage();
+  viewAdjusted = false;
   stage?.destroy();
   stage = new Konva.Stage({
     container: containerRef.value,
@@ -479,6 +490,7 @@ function setupStage(): void {
     if (!stage) {
       return;
     }
+    viewAdjusted = true;
     const oldScale = stage.scaleX();
     const pointer = stage.getPointerPosition();
     if (!pointer) {
@@ -498,6 +510,10 @@ function setupStage(): void {
       x: pointer.x - mousePointTo.x * next,
       y: pointer.y - mousePointTo.y * next
     });
+  });
+
+  stage.on("dragend", () => {
+    viewAdjusted = true;
   });
 
   stage.on("click", () => {
@@ -547,8 +563,23 @@ function syncStageSize(): void {
     return;
   }
   if (stage.width() !== width || stage.height() !== height) {
-    stage.size({ width, height });
-    fitToView();
+    if (viewAdjusted) {
+      const scale = stage.scaleX();
+      const oldWidth = stage.width();
+      const oldHeight = stage.height();
+      const pos = stage.position();
+      const centerX = (oldWidth / 2 - pos.x) / scale;
+      const centerY = (oldHeight / 2 - pos.y) / scale;
+      stage.size({ width, height });
+      stage.position({
+        x: width / 2 - centerX * scale,
+        y: height / 2 - centerY * scale
+      });
+      stage.batchDraw();
+    } else {
+      stage.size({ width, height });
+      applyFitToView();
+    }
   }
 }
 
