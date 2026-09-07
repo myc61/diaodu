@@ -1710,10 +1710,27 @@ db::WorkflowRunDetail WorkflowExecutor::cancel(const std::string& run_id) {
   if (!detail.has_value()) {
     throw std::runtime_error("workflow run not found");
   }
+  for (const auto& command : detail->commands) {
+    if (command.operation_kind == "NAVIGATION" &&
+        (command.state == "CREATED" || command.state == "DISPATCHING" ||
+         command.state == "ACTIVE" || command.state == "UNCERTAIN")) {
+      // Empty GoalID cancels the active navigation goal on the vehicle.
+      (void)robots_.cancelNavigation(command.robot_id, "");
+      repository_.completeCommandRun(
+          command.id,
+          "CANCELLED",
+          nlohmann::json::object(),
+          nlohmann::json{{"cancelled", true}});
+    }
+  }
   for (auto& node : detail->nodes) {
     if (node.state == "PENDING" || node.state == "RUNNING" ||
         node.state == "WAITING_EVENT" || node.state == "WAITING_RESOURCE" ||
         node.state == "PAUSED") {
+      if (node.state == "RUNNING" && node.assigned_robot_id.has_value() &&
+          nodeType(findGraphNode(*detail, node.node_key)) == "NAVIGATION") {
+        (void)robots_.cancelNavigation(*node.assigned_robot_id, "");
+      }
       repository_.updateNodeRun(
           node.id,
           "CANCELLED",

@@ -7,6 +7,7 @@
 #include "dispatcher/maps/map_import_service.hpp"
 #include "dispatcher/maps/map_yaml.hpp"
 #include "dispatcher/maps/pgm.hpp"
+#include "dispatcher/ros/action_result.hpp"
 #include "dispatcher/ros/rosbridge_protocol.hpp"
 #include "dispatcher/ros/rosbridge_session.hpp"
 #include "dispatcher/ros/pose_mapper.hpp"
@@ -947,6 +948,64 @@ void testInterfaceCatalogPartialMerge() {
       "catalog category errors should survive JSON round trip");
 }
 
+void testActionResultParsing() {
+  using dispatcher::ros::actionMessageGoalId;
+  using dispatcher::ros::actionResultSucceeded;
+  using nlohmann::json;
+
+  // Flattened vehicle /result: actionlib status=3 AND NavigationState=6.
+  const json flat = {
+      {"causes", json::array()},
+      {"distance_deviation", 0.008216971436484054},
+      {"duration", 13.21315414},
+      {"goal_id", "web_goal_d00841424d8c"},
+      {"heading_deviation", 1.2893750376877873},
+      {"state", 6},
+      {"status", 3},
+      {"text", ""}};
+  expect(actionMessageGoalId(flat) == "web_goal_d00841424d8c",
+         "string goal_id should be read from flattened result");
+  const auto flat_ok = actionResultSucceeded(flat, true);
+  expect(flat_ok.has_value() && *flat_ok,
+         "flattened status=3 state=6 should be navigation success");
+
+  // Nested actionlib ActionResult — previously misread status.status=3 as Arrived.
+  const json nested = {
+      {"status",
+       {{"goal_id", {{"id", "cmd-1"}}}, {"status", 3}, {"text", ""}}},
+      {"result",
+       {{"duration", 13.2},
+        {"distance_deviation", 0.008},
+        {"heading_deviation", 1.29},
+        {"state", {{"value", 6}}},
+        {"causes", json::array()}}}};
+  expect(actionMessageGoalId(nested) == "cmd-1",
+         "nested GoalStatus.goal_id.id should match");
+  const auto nested_ok = actionResultSucceeded(nested, true);
+  expect(nested_ok.has_value() && *nested_ok,
+         "ActionResult GoalStatus=3 and NavigationState=6 should succeed");
+
+  const auto waiting = actionResultSucceeded(
+      json{{"status", {{"status", 1}, {"goal_id", {{"id", "cmd-1"}}}}},
+           {"result", {{"state", {{"value", 3}}}}}},
+      true);
+  expect(!waiting.has_value(),
+         "NavigationState Arrived(3) without actionlib SUCCEEDED should wait");
+
+  const auto only_actionlib = actionResultSucceeded(
+      json{{"status", {{"status", 3}, {"goal_id", {{"id", "cmd-1"}}}}}},
+      true);
+  expect(!only_actionlib.has_value(),
+         "actionlib SUCCEEDED(3) alone is not navigation success");
+
+  const json failed = {
+      {"status", {{"status", 4}, {"goal_id", {{"id", "cmd-1"}}}}},
+      {"result", {{"state", {{"value", 7}}}}}};
+  const auto failed_ok = actionResultSucceeded(failed, true);
+  expect(failed_ok.has_value() && !*failed_ok,
+         "NavigationState Failed(7) should fail the node");
+}
+
 void testPoseMapper() {
   using dispatcher::ros::Json;
   using dispatcher::ros::PoseFieldMapping;
@@ -1019,6 +1078,7 @@ int main() {
   testRosbridgeMessages();
   testRosbridgeSession();
   testInterfaceCatalogPartialMerge();
+  testActionResultParsing();
   testPoseMapper();
 
   if (failures != 0) {

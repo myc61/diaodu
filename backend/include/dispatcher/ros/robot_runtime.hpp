@@ -65,6 +65,11 @@ class RobotRuntime {
       const NavigationGoalOptions& options,
       RosCommandHandler handler);
 
+  // Publish actionlib_msgs/GoalID to {nav_action}/cancel. Empty id cancels
+  // the active navigation goal (zj_humanoid convention).
+  bool cancelNavigation(
+      const std::string& robot_id, const std::string& goal_id = "");
+
   RosDispatchResult dispatchCapability(
       const db::RobotRecord& robot,
       const std::string& operation_kind,

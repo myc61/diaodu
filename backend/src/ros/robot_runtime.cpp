@@ -2,6 +2,7 @@
 
 #include "dispatcher/domain/map_transform.hpp"
 #include "dispatcher/ops/ops_log.hpp"
+#include "dispatcher/ros/action_result.hpp"
 #include "dispatcher/ros/pose_mapper.hpp"
 #include "dispatcher/ros/ros_typedef_schema.hpp"
 
@@ -76,87 +77,6 @@ std::string actionEnvelopeType(
     return action_type + suffix;
   }
   return action_type;
-}
-
-std::string actionMessageGoalId(const nlohmann::json& message) {
-  if (message.contains("status") && message["status"].is_object()) {
-    const auto& status = message["status"];
-    if (status.contains("goal_id") && status["goal_id"].is_object()) {
-      return status["goal_id"].value("id", "");
-    }
-  }
-  if (message.contains("goal_id") && message["goal_id"].is_object()) {
-    return message["goal_id"].value("id", "");
-  }
-  return {};
-}
-
-std::optional<int> actionStatusCode(const nlohmann::json& message) {
-  auto readCode = [](const nlohmann::json& object) -> std::optional<int> {
-    if (object.contains("status") && object["status"].is_number_integer()) {
-      return object["status"].get<int>();
-    }
-    if (object.contains("value") && object["value"].is_number_integer()) {
-      return object["value"].get<int>();
-    }
-    return std::nullopt;
-  };
-
-  if (message.contains("status") && message["status"].is_object()) {
-    if (const auto code = readCode(message["status"]); code.has_value()) {
-      return code;
-    }
-  }
-  if (message.contains("result") && message["result"].is_object()) {
-    const auto& result = message["result"];
-    if (result.contains("status") && result["status"].is_object()) {
-      if (const auto code = readCode(result["status"]); code.has_value()) {
-        return code;
-      }
-    }
-    if (const auto code = readCode(result); code.has_value()) {
-      return code;
-    }
-  }
-  return readCode(message);
-}
-
-// zj_humanoid navigation/Status: Idle=0 Active=1 Running=2 Arrived=3
-// Canceling=4 Cancelled=5 Succeeded=6 Failed=7 Error=8 Aborted=9
-// Generic ROS1 actionlib: SUCCEEDED=3.
-std::optional<bool> actionResultSucceeded(
-    const nlohmann::json& message, bool zj_navigation_status) {
-  const auto code = actionStatusCode(message);
-  if (zj_navigation_status) {
-    if (code.has_value()) {
-      if (*code == 6) {
-        return true;
-      }
-      if (*code == 5 || *code == 7 || *code == 8 || *code == 9) {
-        return false;
-      }
-      return std::nullopt;
-    }
-  } else if (code.has_value()) {
-    return *code == 3;
-  }
-  if (message.contains("result") && message["result"].is_object()) {
-    const auto& result = message["result"];
-    if (result.contains("success") && result["success"].is_boolean()) {
-      return result["success"].get<bool>();
-    }
-  }
-  if (message.contains("success") && message["success"].is_boolean()) {
-    return message["success"].get<bool>();
-  }
-  return zj_navigation_status ? std::nullopt : std::optional<bool>{false};
-}
-
-std::string actionResultError(const nlohmann::json& message) {
-  if (message.contains("status") && message["status"].is_object()) {
-    return message["status"].value("text", "");
-  }
-  return message.value("error", "");
 }
 
 nlohmann::json makeGenericActionGoal(
@@ -633,6 +553,51 @@ RosDispatchResult RobotRuntime::sendNavigationGoalTracked(
   return dispatched;
 }
 
+bool RobotRuntime::cancelNavigation(
+    const std::string& robot_id, const std::string& goal_id) {
+  std::shared_ptr<RobotSession> session_state;
+  db::RobotRecord robot;
+  {
+    std::lock_guard lock(mutex_);
+    const auto it = sessions_.find(robot_id);
+    if (it == sessions_.end()) {
+      return false;
+    }
+    session_state = it->second;
+    robot = it->second->config;
+  }
+  if (session_state == nullptr || session_state->session == nullptr ||
+      !session_state->transport || !session_state->transport->connected()) {
+    return false;
+  }
+  const auto server = robot.nav_action.value_or(
+      "/zj_humanoid/navigation/navigation");
+  const auto cancel_topic = actionTopic(server, "/cancel");
+  const nlohmann::json cancel_msg{
+      {"stamp", {{"secs", 0}, {"nsecs", 0}}},
+      {"id", goal_id},
+  };
+  std::lock_guard lock(session_state->session_mutex);
+  if (!session_state->session->advertise(cancel_topic, "actionlib_msgs/GoalID") ||
+      !session_state->session->publish(
+          cancel_topic, cancel_msg, "actionlib_msgs/GoalID")) {
+    ops::OpsLog::instance().warn(
+        "nav",
+        "failed to publish navigation cancel",
+        {{"robot_id", robot_id},
+         {"topic", cancel_topic},
+         {"goal_id", goal_id}});
+    return false;
+  }
+  ops::OpsLog::instance().info(
+      "nav",
+      "navigation cancel sent",
+      {{"robot_id", robot_id},
+       {"topic", cancel_topic},
+       {"goal_id", goal_id}});
+  return true;
+}
+
 RosDispatchResult RobotRuntime::publishRos1ActionGoal(
     const std::shared_ptr<RobotSession>& session_state,
     const std::string& action_name,
@@ -658,7 +623,8 @@ RosDispatchResult RobotRuntime::publishRos1ActionGoal(
         actionEnvelopeType(action_type, "Feedback"),
         {},
         [goal_id, handler](std::string_view, const Json& message) {
-          if (actionMessageGoalId(message) != goal_id) {
+          const auto incoming_id = actionMessageGoalId(message);
+          if (!incoming_id.empty() && incoming_id != goal_id) {
             return;
           }
           handler(RosCommandEvent{
@@ -674,15 +640,38 @@ RosDispatchResult RobotRuntime::publishRos1ActionGoal(
         {},
         [session_state, subscriptions, goal_id, handler, zj_navigation_status](
             std::string_view, const Json& message) {
-          if (actionMessageGoalId(message) != goal_id) {
+          const auto incoming_id = actionMessageGoalId(message);
+          if (!incoming_id.empty() && incoming_id != goal_id) {
+            ops::OpsLog::instance().info(
+                "nav",
+                "ignored action result (goal id mismatch)",
+                {{"expected", goal_id}, {"incoming", incoming_id}});
             return;
           }
           const auto outcome =
               actionResultSucceeded(message, zj_navigation_status);
           if (!outcome.has_value()) {
+            const auto nav = navigationStateCode(message);
+            const auto lib = actionlibGoalStatus(message);
+            ops::OpsLog::instance().warn(
+                "nav",
+                "navigation result is not terminal yet",
+                {{"goal_id", goal_id},
+                 {"nav_state", nav.value_or(-1)},
+                 {"actionlib_status", lib.value_or(-1)}});
             return;
           }
           const bool success = *outcome;
+          if (zj_navigation_status) {
+            ops::OpsLog::instance().info(
+                "nav",
+                success ? "navigation result succeeded"
+                        : "navigation result failed",
+                {{"goal_id", goal_id},
+                 {"nav_state", navigationStateCode(message).value_or(-1)},
+                 {"actionlib_status",
+                  actionlibGoalStatus(message).value_or(-1)}});
+          }
           const auto error = actionResultError(message);
           if (!subscriptions->feedback_id.empty()) {
             (void)session_state->session->unsubscribe(
