@@ -1,5 +1,6 @@
 #include "dispatcher/workflow/workflow_executor.hpp"
 #include "dispatcher/ops/ops_log.hpp"
+#include "dispatcher/ros/action_result.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -76,6 +77,18 @@ nlohmann::json renderRequestTemplate(
     }
   }
   return request_template;
+}
+
+void stampDispatcherDispatch(nlohmann::json& output) {
+  output["dispatcher_dispatched_at"] = ops::localIsoNow();
+  output["dispatcher_dispatched_unix_ms"] = ops::localUnixMs();
+}
+
+nlohmann::json stampDispatcherDecision(nlohmann::json output, bool success) {
+  output["dispatcher_decided_at"] = ops::localIsoNow();
+  output["dispatcher_decided_unix_ms"] = ops::localUnixMs();
+  output["dispatch_state"] = success ? "SUCCEEDED" : "FAILED";
+  return output;
 }
 
 }  // namespace
@@ -260,10 +273,11 @@ void WorkflowExecutor::completeNode(
   if (node == nullptr) {
     return;
   }
+  auto stamped = stampDispatcherDecision(output, true);
   repository_.updateNodeRun(
-      node->id, "SUCCEEDED", node->assigned_robot_id, output, nlohmann::json());
+      node->id, "SUCCEEDED", node->assigned_robot_id, stamped, nlohmann::json());
   node->state = "SUCCEEDED";
-  node->output_data = output;
+  node->output_data = stamped;
 
   const auto graph_node = findGraphNode(detail, node_key);
   if (nodeType(graph_node) == "END") {
@@ -322,9 +336,11 @@ void WorkflowExecutor::failNode(
     return;
   }
   const nlohmann::json error{{"error", message}};
+  auto stamped = stampDispatcherDecision(node->output_data, false);
   repository_.updateNodeRun(
-      node->id, "FAILED", node->assigned_robot_id, node->output_data, error);
+      node->id, "FAILED", node->assigned_robot_id, stamped, error);
   node->state = "FAILED";
+  node->output_data = stamped;
   if (followEdges(detail, node_key, "failure") > 0) {
     maybeFinishRun(detail);
     return;
@@ -463,7 +479,9 @@ std::size_t WorkflowExecutor::followEdges(
          {"target", target_key},
          {"edge_kind", edge_kind},
          {"event_name", event_name},
-         {"attempt", cycle}},
+         {"attempt", cycle},
+         {"dispatcher_at", ops::localIsoNow()},
+         {"dispatcher_unix_ms", ops::localUnixMs()}},
         std::nullopt);
     activateNode(detail, target_key);
     ++followed;
@@ -645,6 +663,19 @@ void WorkflowExecutor::handleRosCommandEvent(
   }
 
   const auto command_state = event.success ? "SUCCEEDED" : "FAILED";
+  ops::OpsLog::instance().info(
+      "nav",
+      event.success ? "workflow applied ROS result SUCCEEDED"
+                    : "workflow applied ROS result FAILED",
+      {{"run_id", workflow_run_id},
+       {"node_run_id", node_run_id},
+       {"command_run_id", command_run_id},
+       {"correlation_id", event.correlation_id},
+       {"error", event.error},
+       {"nav_state",
+        ros::navigationStateCode(event.values).value_or(-1)},
+       {"actionlib_status",
+        ros::actionlibGoalStatus(event.values).value_or(-1)}});
   const auto error = event.success
       ? nlohmann::json()
       : nlohmann::json{{"message", event.error.empty()
@@ -674,6 +705,7 @@ void WorkflowExecutor::handleRosCommandEvent(
   output["correlation_id"] = event.correlation_id;
   output["result"] = event.values;
   output["result_success"] = event.success;
+  output["robot_stamps"] = ros::actionMessageStamps(event.values);
   if (!event.error.empty()) {
     output["result_error"] = event.error;
   }
@@ -841,6 +873,7 @@ void WorkflowExecutor::dispatchCapabilityNode(
         {"retry_count", retry_count},
         {"retry_delay_ms", retry_delay_ms},
     });
+    stampDispatcherDispatch(output_context);
     node.output_data = std::move(output_context);
     repository_.updateNodeRun(
         node.id,
@@ -957,6 +990,7 @@ void WorkflowExecutor::dispatchSshCapabilityNode(
       {"retry_count", retry_count},
       {"retry_delay_ms", retry_delay_ms},
   });
+  stampDispatcherDispatch(output_context);
   node.output_data = std::move(output_context);
   repository_.updateNodeRun(
       node.id, "RUNNING", node.assigned_robot_id, node.output_data,
@@ -1236,6 +1270,7 @@ void WorkflowExecutor::executeNode(
         {"startup_profile_version", profile->version},
         {"dispatch_state", "DISPATCHING"},
     };
+    stampDispatcherDispatch(node.output_data);
     repository_.updateNodeRun(
         node.id,
         "RUNNING",
@@ -1369,6 +1404,7 @@ void WorkflowExecutor::executeNode(
             {"heading_tolerance", heading_tolerance},
             {"dispatch_state", "DISPATCHING"},
         };
+        stampDispatcherDispatch(node.output_data);
         repository_.updateNodeRun(
             node.id,
             "RUNNING",
@@ -1402,6 +1438,19 @@ void WorkflowExecutor::executeNode(
         }
         repository_.markCommandRunDispatched(
             command.id, dispatched.correlation_id);
+        ops::OpsLog::instance().info(
+            "nav",
+            "workflow NAVIGATION waiting for /result",
+            {{"run_id", detail.run.id},
+             {"node_run_id", node.id},
+             {"command_run_id", command.id},
+             {"command_id", goal.command_id},
+             {"robot_id", robot_id},
+             {"to_station_id", to_station_id},
+             {"nav_action", robot->nav_action.value_or("")},
+             {"x", station->x},
+             {"y", station->y},
+             {"yaw", station->yaw}});
       } catch (const std::exception& ex) {
         failNode(detail, node.node_key, ex.what());
       }

@@ -2607,6 +2607,8 @@ void registerRoutes() {
           {"assigned_robot_id", node.assigned_robot_id.value_or("")},
           {"input_data", node.input_data},
           {"output_data", node.output_data},
+          {"started_at", node.started_at.value_or("")},
+          {"finished_at", node.finished_at.value_or("")},
       };
       if (node.error_data.is_null()) {
         item["error_data"] = nullptr;
@@ -2912,6 +2914,7 @@ void registerRoutes() {
 
   // Connect READY robots after routes are registered (and on every process boot).
   if (appState().robot_runtime != nullptr) {
+    ops::OpsLog::instance().clear();
     appState().robot_runtime->refreshConnections();
     ops::OpsLog::instance().info("system", "dispatcher started, refreshing robot connections");
   }

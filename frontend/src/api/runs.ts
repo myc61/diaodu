@@ -31,6 +31,8 @@ export interface NodeRun {
   input_data: Record<string, unknown>;
   output_data: Record<string, unknown>;
   error_data: Record<string, unknown> | null;
+  started_at: string;
+  finished_at: string;
 }
 
 export interface CommandRun {

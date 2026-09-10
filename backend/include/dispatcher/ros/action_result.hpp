@@ -78,6 +78,10 @@ inline std::optional<int> navigationStateCode(const nlohmann::json& message) {
       message["result"].contains("state")) {
     return jsonInt(message["result"]["state"]);
   }
+  if (message.contains("feedback") && message["feedback"].is_object() &&
+      message["feedback"].contains("state")) {
+    return jsonInt(message["feedback"]["state"]);
+  }
   if (message.contains("state")) {
     return jsonInt(message["state"]);
   }
@@ -92,9 +96,13 @@ inline bool navigationStateFailed(int code) {
   return code == 5 || code == 7 || code == 8 || code == 9;
 }
 
-// zj_humanoid success requires BOTH:
-//   actionlib GoalStatus.SUCCEEDED (3) AND NavigationState.Succeeded (6)
-// GoalStatus 3 is not NavigationState.Arrived (also 3).
+inline bool navigationStateSucceeded(int code) {
+  return code == 6;
+}
+
+// zj_humanoid /result: NavigationState.Succeeded (6) ends the node.
+// Actionlib GoalStatus 3 is SUCCEEDED, not Arrived. Do not finish on
+// feedback Arrived(3); wait for this ActionResult.
 inline std::optional<bool> actionResultSucceeded(
     const nlohmann::json& message, bool zj_navigation_status) {
   if (zj_navigation_status) {
@@ -104,7 +112,7 @@ inline std::optional<bool> actionResultSucceeded(
         (lib.has_value() && actionlibStatusFailed(*lib))) {
       return false;
     }
-    if (nav.has_value() && *nav == 6 && lib.has_value() && *lib == 3) {
+    if (nav.has_value() && navigationStateSucceeded(*nav)) {
       return true;
     }
     return std::nullopt;
@@ -126,6 +134,40 @@ inline std::optional<bool> actionResultSucceeded(
     return message["success"].get<bool>();
   }
   return false;
+}
+
+inline nlohmann::json actionMessageStamps(const nlohmann::json& message) {
+  nlohmann::json out = nlohmann::json::object();
+  const auto takeStamp = [](const nlohmann::json& parent, const char* key) {
+    if (parent.contains(key) && parent[key].is_object() &&
+        parent[key].contains("stamp")) {
+      return parent[key]["stamp"];
+    }
+    return nlohmann::json();
+  };
+  if (message.contains("header") && message["header"].is_object() &&
+      message["header"].contains("stamp")) {
+    out["result_header_stamp"] = message["header"]["stamp"];
+  }
+  if (message.contains("result") && message["result"].is_object()) {
+    auto inner = takeStamp(message["result"], "header");
+    if (!inner.is_null() && !inner.empty()) {
+      out["result_inner_stamp"] = inner;
+    }
+  }
+  if (message.contains("status") && message["status"].is_object() &&
+      message["status"].contains("goal_id") &&
+      message["status"]["goal_id"].is_object() &&
+      message["status"]["goal_id"].contains("stamp")) {
+    out["goal_accepted_stamp"] = message["status"]["goal_id"]["stamp"];
+  }
+  if (message.contains("feedback") && message["feedback"].is_object()) {
+    auto inner = takeStamp(message["feedback"], "header");
+    if (!inner.is_null() && !inner.empty()) {
+      out["feedback_stamp"] = inner;
+    }
+  }
+  return out;
 }
 
 inline std::string actionResultError(const nlohmann::json& message) {

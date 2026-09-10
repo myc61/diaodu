@@ -114,6 +114,141 @@ function stateInfo(state: string) {
   return statePresentation[state] ?? statePresentation.PENDING;
 }
 
+function formatDispatcherClock(value?: string | null, compact = false): string {
+  if (!value) {
+    return "";
+  }
+  const trimmed = value.trim();
+  const localMatch = trimmed.match(
+    /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}(?:\.\d+)?)/
+  );
+  const hasZone = /[+-]\d{2}/.test(trimmed.slice(19));
+  if (localMatch && !hasZone) {
+    const clock = localMatch[2];
+    if (compact) {
+      return clock.length >= 12 ? clock.slice(0, 12) : clock;
+    }
+    return `${localMatch[1]} ${clock}`;
+  }
+  const normalized = trimmed.includes("T") ? trimmed : trimmed.replace(" ", "T");
+  const date = new Date(normalized);
+  if (Number.isNaN(date.getTime())) {
+    return compact ? trimmed.slice(11, 23) : trimmed;
+  }
+  const pad = (n: number, width = 2) => String(n).padStart(width, "0");
+  const clock = `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(
+    date.getSeconds()
+  )}.${pad(date.getMilliseconds(), 3)}`;
+  if (compact) {
+    return clock;
+  }
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${clock}`;
+}
+
+function formatRosStamp(stamp: unknown): string {
+  if (!stamp || typeof stamp !== "object") {
+    return "";
+  }
+  const record = stamp as { secs?: unknown; nsecs?: unknown };
+  const secs = Number(record.secs);
+  if (!Number.isFinite(secs)) {
+    return "";
+  }
+  const nsecs = Number(record.nsecs ?? 0);
+  return `${secs}.${String(Number.isFinite(nsecs) ? Math.trunc(nsecs) : 0).padStart(9, "0")}`;
+}
+
+function robotStampsFromPayload(
+  result: Record<string, unknown> | null | undefined,
+  feedback: Record<string, unknown> | null | undefined
+): Record<string, string> {
+  const stamps: Record<string, string> = {};
+  const resultHeader = (result?.header as Record<string, unknown> | undefined)
+    ?.stamp;
+  const inner = (
+    (result?.result as Record<string, unknown> | undefined)?.header as
+      | Record<string, unknown>
+      | undefined
+  )?.stamp;
+  const accepted = (
+    (result?.status as Record<string, unknown> | undefined)?.goal_id as
+      | Record<string, unknown>
+      | undefined
+  )?.stamp;
+  const feedbackStamp =
+    (feedback?.header as Record<string, unknown> | undefined)?.stamp ??
+    (
+      (feedback?.feedback as Record<string, unknown> | undefined)?.header as
+        | Record<string, unknown>
+        | undefined
+    )?.stamp;
+  const resultText = formatRosStamp(resultHeader);
+  const innerText = formatRosStamp(inner);
+  const acceptedText = formatRosStamp(accepted);
+  const feedbackText = formatRosStamp(feedbackStamp);
+  if (resultText) {
+    stamps.result_header_stamp = resultText;
+  }
+  if (innerText) {
+    stamps.result_inner_stamp = innerText;
+  }
+  if (acceptedText) {
+    stamps.goal_accepted_stamp = acceptedText;
+  }
+  if (feedbackText) {
+    stamps.feedback_stamp = feedbackText;
+  }
+  return stamps;
+}
+
+const latestCommandByNodeId = computed(() => {
+  const map = new Map<string, CommandRun>();
+  for (const command of selectedRun.value?.commands ?? []) {
+    map.set(command.node_run_id, command);
+  }
+  return map;
+});
+
+function nodeTiming(node?: NodeRun) {
+  if (!node) {
+    return {
+      dispatched: "",
+      decided: "",
+      dispatchedFull: "",
+      decidedFull: "",
+      robot: ""
+    };
+  }
+  const command = latestCommandByNodeId.value.get(node.id);
+  const output = (node.output_data ?? {}) as Record<string, unknown>;
+  const robotFromOutput = output.robot_stamps as Record<string, unknown> | undefined;
+  const fromCommand = robotStampsFromPayload(
+    command?.result_payload,
+    command?.last_feedback
+  );
+  const dispatched =
+    command?.dispatched_at ||
+    String(output.dispatcher_dispatched_at ?? "") ||
+    node.started_at;
+  const decided =
+    command?.completed_at ||
+    String(output.dispatcher_decided_at ?? "") ||
+    node.finished_at;
+  const robot =
+    formatRosStamp(robotFromOutput?.result_header_stamp) ||
+    formatRosStamp(robotFromOutput?.result_inner_stamp) ||
+    fromCommand.result_header_stamp ||
+    fromCommand.result_inner_stamp ||
+    "";
+  return {
+    dispatched: formatDispatcherClock(dispatched, true),
+    decided: formatDispatcherClock(decided, true),
+    dispatchedFull: formatDispatcherClock(dispatched),
+    decidedFull: formatDispatcherClock(decided),
+    robot
+  };
+}
+
 const runtimeNodes = computed(() =>
   (selectedRun.value?.graph.nodes ?? []).map((raw) => {
     const id = String(raw.id ?? "");
@@ -123,6 +258,7 @@ const runtimeNodes = computed(() =>
     const info = stateInfo(state);
     const nodeType = String(raw.type ?? "DEFAULT");
     const baseLabel = String(data.label ?? nodeType ?? id);
+    const timing = nodeTiming(run);
     return {
       id,
       type: "dispatch",
@@ -131,33 +267,42 @@ const runtimeNodes = computed(() =>
         ...data,
         nodeType,
         label: `${baseLabel}${info.label ? `\n${info.label}` : ""}`,
-        runtime_state: state
+        runtime_state: state,
+        dispatcher_dispatched_at: timing.dispatched,
+        dispatcher_decided_at: timing.decided,
+        robot_result_stamp: timing.robot
       },
       class: `runtime-node runtime-node-${state.toLowerCase()}`
     };
   })
 );
 
-const traversedEdgeIds = computed(() => {
-  const ids = new Set<string>();
+const traversedEdges = computed(() => {
+  const map = new Map<string, string>();
   for (const event of selectedRun.value?.events ?? []) {
     if (
-      event.event_type === "workflow.edge.traversed" &&
-      Number(event.payload.attempt ?? 1) === selectedAttempt.value
+      event.event_type !== "workflow.edge.traversed" ||
+      Number(event.payload.attempt ?? 1) !== selectedAttempt.value
     ) {
-      const edgeId = String(event.payload.edge_id ?? "");
-      if (edgeId) {
-        ids.add(edgeId);
-      }
+      continue;
     }
+    const edgeId = String(event.payload.edge_id ?? "");
+    if (!edgeId) {
+      continue;
+    }
+    map.set(
+      edgeId,
+      String(event.payload.dispatcher_at ?? event.occurred_at ?? "")
+    );
   }
-  return ids;
+  return map;
 });
 
 const runtimeEdges = computed(() =>
   (selectedRun.value?.graph.edges ?? []).map((raw) => {
     const id = String(raw.id ?? `${raw.source}-${raw.target}`);
-    const traversed = traversedEdgeIds.value.has(id);
+    const traversedAt = traversedEdges.value.get(id) ?? "";
+    const traversed = Boolean(traversedAt);
     const edgeKind = String(raw.edge_kind ?? "success");
     const color = traversed
       ? edgeKind === "event"
@@ -166,12 +311,14 @@ const runtimeEdges = computed(() =>
           ? "#b03a2e"
           : "#238636"
       : "#aeb8b3";
-    const label =
+    const kindLabel =
       edgeKind === "event"
         ? `事件：${String(raw.event_name ?? "")}`
         : edgeKind === "failure"
           ? "失败"
           : "成功";
+    const clock = formatDispatcherClock(traversedAt, true);
+    const label = clock ? `${kindLabel} · ${clock}` : kindLabel;
     const sourceHandle = edgeKind === "failure" ? "failure" : "success";
     return {
       id,
@@ -555,7 +702,7 @@ onBeforeUnmount(() => {
             <header class="runtime-graph-toolbar">
               <div>
                 <strong>流程执行图</strong>
-                <small>新循环自动切换到最新轮次，颜色按本轮重新计算</small>
+                <small>节点显示调度下发/判定时间；边上是走边时刻。机器人 stamp 为 ROS 时</small>
               </div>
               <label v-if="availableAttempts.length > 1">
                 查看轮次
@@ -596,6 +743,25 @@ onBeforeUnmount(() => {
                 <small v-if="node.assigned_robot_id">
                   robot {{ node.assigned_robot_id.slice(0, 8) }}
                 </small>
+              </div>
+              <div
+                v-if="
+                  nodeTiming(node).dispatchedFull ||
+                  nodeTiming(node).decidedFull ||
+                  nodeTiming(node).robot
+                "
+                class="run-timing"
+              >
+                <span v-if="nodeTiming(node).dispatchedFull">
+                  调度下发 {{ nodeTiming(node).dispatchedFull }}
+                </span>
+                <span v-if="nodeTiming(node).decidedFull">
+                  调度{{ node.state === "FAILED" ? "失败" : "成功" }}
+                  {{ nodeTiming(node).decidedFull }}
+                </span>
+                <span v-if="nodeTiming(node).robot">
+                  机器人 result {{ nodeTiming(node).robot }}
+                </span>
               </div>
               <pre>{{ JSON.stringify(node.output_data || node.error_data || {}, null, 2) }}</pre>
               <div v-if="isManualConfirmation(node)" class="manual-confirm-card">
@@ -641,6 +807,23 @@ onBeforeUnmount(() => {
                     · correlation {{ command.correlation_id }}
                   </template>
                 </small>
+                <div class="run-timing">
+                  <span v-if="command.dispatched_at">
+                    调度下发 {{ formatDispatcherClock(command.dispatched_at) }}
+                  </span>
+                  <span v-if="command.completed_at">
+                    调度判定 {{ formatDispatcherClock(command.completed_at) }}
+                  </span>
+                  <span
+                    v-for="(stamp, key) in robotStampsFromPayload(
+                      command.result_payload,
+                      command.last_feedback
+                    )"
+                    :key="key"
+                  >
+                    机器人 {{ key }} {{ stamp }}
+                  </span>
+                </div>
                 <pre>{{ JSON.stringify({
                   request: command.request_payload,
                   feedback: command.last_feedback,
@@ -862,8 +1045,8 @@ onBeforeUnmount(() => {
 .legend-failed { color: #c62828; }
 
 .runtime-flow {
-  height: 360px;
-  min-height: 260px;
+  height: 420px;
+  min-height: 280px;
 }
 
 .runtime-flow :deep(.vue-flow__node-dispatch) {
@@ -880,6 +1063,10 @@ onBeforeUnmount(() => {
 
 .runtime-flow :deep(.vue-flow__edge-textbg) {
   fill: #fff;
+}
+
+.runtime-flow :deep(.vue-flow__edge-text) {
+  font-size: 10px;
 }
 
 @keyframes runtime-pulse {
@@ -930,6 +1117,16 @@ onBeforeUnmount(() => {
   background: #f3f6f4;
   padding: 6px;
   border-radius: 4px;
+}
+
+.run-timing {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-family: var(--mono);
 }
 
 .command-run {

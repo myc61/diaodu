@@ -414,6 +414,8 @@ NodeRunRecord readNodeRun(const pqxx::row& row) {
       .input_data = nlohmann::json::parse(row["input_data"].as<std::string>()),
       .output_data =
           nlohmann::json::parse(row["output_data"].as<std::string>()),
+      .started_at = optionalText(row["started_at"]),
+      .finished_at = optionalText(row["finished_at"]),
   };
   if (!row["error_data"].is_null()) {
     node.error_data =
@@ -545,7 +547,8 @@ constexpr const char* kNodeRunSelect =
     "SELECT id::text AS id, workflow_run_id::text AS workflow_run_id, "
     "node_key, attempt, state, assigned_robot_id::text AS assigned_robot_id, "
     "input_data::text AS input_data, output_data::text AS output_data, "
-    "error_data::text AS error_data "
+    "error_data::text AS error_data, "
+    "started_at::text AS started_at, finished_at::text AS finished_at "
     "FROM dispatch.node_runs ";
 
 constexpr const char* kCapabilityTemplateSelect =
@@ -2615,7 +2618,13 @@ void WorkspaceRepository::updateNodeRun(
     tx.exec_params(
         "UPDATE dispatch.node_runs SET state = $1, "
         "assigned_robot_id = NULLIF($2, '')::uuid, output_data = $3::jsonb, "
-        "error_data = NULL, updated_at = now() WHERE id = $4::uuid",
+        "error_data = NULL, "
+        "started_at = CASE WHEN $1 IN ('RUNNING','WAITING_EVENT',"
+        "'WAITING_RESOURCE','PAUSED','RECOVERING','CANCELLING') "
+        "THEN COALESCE(started_at, now()) ELSE started_at END, "
+        "finished_at = CASE WHEN $1 IN ('SUCCEEDED','FAILED','CANCELLED') "
+        "THEN COALESCE(finished_at, now()) ELSE finished_at END, "
+        "updated_at = now() WHERE id = $4::uuid",
         state,
         assigned_robot_id.value_or(""),
         output_data.dump(),
@@ -2624,7 +2633,13 @@ void WorkspaceRepository::updateNodeRun(
     tx.exec_params(
         "UPDATE dispatch.node_runs SET state = $1, "
         "assigned_robot_id = NULLIF($2, '')::uuid, output_data = $3::jsonb, "
-        "error_data = $4::jsonb, updated_at = now() WHERE id = $5::uuid",
+        "error_data = $4::jsonb, "
+        "started_at = CASE WHEN $1 IN ('RUNNING','WAITING_EVENT',"
+        "'WAITING_RESOURCE','PAUSED','RECOVERING','CANCELLING') "
+        "THEN COALESCE(started_at, now()) ELSE started_at END, "
+        "finished_at = CASE WHEN $1 IN ('SUCCEEDED','FAILED','CANCELLED') "
+        "THEN COALESCE(finished_at, now()) ELSE finished_at END, "
+        "updated_at = now() WHERE id = $5::uuid",
         state,
         assigned_robot_id.value_or(""),
         output_data.dump(),
@@ -2648,7 +2663,13 @@ bool WorkspaceRepository::transitionNodeRun(
     rows = tx.exec_params(
         "UPDATE dispatch.node_runs SET state = $1, "
         "assigned_robot_id = NULLIF($2, '')::uuid, output_data = $3::jsonb, "
-        "error_data = NULL, updated_at = now() "
+        "error_data = NULL, "
+        "started_at = CASE WHEN $1 IN ('RUNNING','WAITING_EVENT',"
+        "'WAITING_RESOURCE','PAUSED','RECOVERING','CANCELLING') "
+        "THEN COALESCE(started_at, now()) ELSE started_at END, "
+        "finished_at = CASE WHEN $1 IN ('SUCCEEDED','FAILED','CANCELLED') "
+        "THEN COALESCE(finished_at, now()) ELSE finished_at END, "
+        "updated_at = now() "
         "WHERE id = $4::uuid AND state = $5 RETURNING id",
         next_state,
         assigned_robot_id.value_or(""),
@@ -2659,7 +2680,13 @@ bool WorkspaceRepository::transitionNodeRun(
     rows = tx.exec_params(
         "UPDATE dispatch.node_runs SET state = $1, "
         "assigned_robot_id = NULLIF($2, '')::uuid, output_data = $3::jsonb, "
-        "error_data = $4::jsonb, updated_at = now() "
+        "error_data = $4::jsonb, "
+        "started_at = CASE WHEN $1 IN ('RUNNING','WAITING_EVENT',"
+        "'WAITING_RESOURCE','PAUSED','RECOVERING','CANCELLING') "
+        "THEN COALESCE(started_at, now()) ELSE started_at END, "
+        "finished_at = CASE WHEN $1 IN ('SUCCEEDED','FAILED','CANCELLED') "
+        "THEN COALESCE(finished_at, now()) ELSE finished_at END, "
+        "updated_at = now() "
         "WHERE id = $5::uuid AND state = $6 RETURNING id",
         next_state,
         assigned_robot_id.value_or(""),

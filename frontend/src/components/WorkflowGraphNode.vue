@@ -9,6 +9,19 @@ const label = computed(() => String(props.data?.label ?? nodeType.value));
 const runtimeState = computed(() =>
   props.data?.runtime_state ? String(props.data.runtime_state) : ""
 );
+const dispatchedAt = computed(() =>
+  props.data?.dispatcher_dispatched_at
+    ? String(props.data.dispatcher_dispatched_at)
+    : ""
+);
+const decidedAt = computed(() =>
+  props.data?.dispatcher_decided_at
+    ? String(props.data.dispatcher_decided_at)
+    : ""
+);
+const robotStamp = computed(() =>
+  props.data?.robot_result_stamp ? String(props.data.robot_result_stamp) : ""
+);
 const isStart = computed(() => nodeType.value === "START");
 const isEnd = computed(() => nodeType.value === "END");
 const showTarget = computed(() => !isStart.value);
@@ -36,6 +49,13 @@ const showFailure = computed(() => !isStart.value && !isEnd.value);
     <div class="dispatch-kind">{{ nodeType }}</div>
     <div class="dispatch-label">{{ label }}</div>
     <div v-if="runtimeState" class="dispatch-runtime">{{ runtimeState }}</div>
+    <div v-if="dispatchedAt || decidedAt || robotStamp" class="dispatch-timing">
+      <span v-if="dispatchedAt">下发 {{ dispatchedAt }}</span>
+      <span v-if="decidedAt">
+        {{ runtimeState === "FAILED" ? "失败" : "成功" }} {{ decidedAt }}
+      </span>
+      <span v-if="robotStamp">机器人 {{ robotStamp }}</span>
+    </div>
     <div v-if="showSuccess || showFailure" class="dispatch-ports">
       <span v-if="showSuccess" class="port-success">成功 ↓</span>
       <span v-if="showFailure" class="port-failure">失败 →</span>
@@ -60,8 +80,8 @@ const showFailure = computed(() => !isStart.value && !isEnd.value);
 <style scoped>
 .dispatch-node {
   position: relative;
-  min-width: 164px;
-  max-width: 220px;
+  min-width: 176px;
+  max-width: 248px;
   padding: 8px 12px 10px;
   border: 1px solid #9aada3;
   border-radius: 8px;
@@ -104,6 +124,16 @@ const showFailure = computed(() => !isStart.value && !isEnd.value);
   color: #4d5c56;
   font-size: 11px;
   font-family: var(--mono, ui-monospace, monospace);
+}
+
+.dispatch-timing {
+  display: grid;
+  gap: 1px;
+  margin-top: 5px;
+  color: #4d5c56;
+  font-size: 10px;
+  font-family: var(--mono, ui-monospace, monospace);
+  line-height: 1.35;
 }
 
 .dispatch-ports {

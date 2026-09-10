@@ -7,11 +7,15 @@
 #include "dispatcher/ros/ros_typedef_schema.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <ctime>
 #include <future>
+#include <mutex>
 #include <optional>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -78,6 +82,117 @@ std::string actionEnvelopeType(
   }
   return action_type;
 }
+
+std::string localIsoAt(std::chrono::system_clock::time_point now) {
+  using namespace std::chrono;
+  const auto ms = duration_cast<milliseconds>(now.time_since_epoch()) % 1000;
+  const auto time = system_clock::to_time_t(now);
+  std::tm local{};
+  localtime_r(&time, &local);
+  char buf[32];
+  std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &local);
+  char out[40];
+  std::snprintf(out, sizeof(out), "%s.%03d", buf, static_cast<int>(ms.count()));
+  return out;
+}
+
+std::string localIsoNow() {
+  return localIsoAt(std::chrono::system_clock::now());
+}
+
+std::int64_t unixMsAt(std::chrono::system_clock::time_point now) {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             now.time_since_epoch())
+      .count();
+}
+
+std::int64_t localUnixMs() {
+  return unixMsAt(std::chrono::system_clock::now());
+}
+
+nlohmann::json stampToJson(const nlohmann::json& stamp) {
+  if (!stamp.is_object()) {
+    return nlohmann::json::object();
+  }
+  nlohmann::json out = nlohmann::json::object();
+  const auto secs = jsonInt(stamp.contains("secs") ? stamp["secs"] : stamp.value("sec", nlohmann::json()));
+  const auto nsecs = jsonInt(
+      stamp.contains("nsecs") ? stamp["nsecs"]
+                              : (stamp.contains("nanosec") ? stamp["nanosec"] : nlohmann::json()));
+  if (secs.has_value()) {
+    out["secs"] = *secs;
+  }
+  if (nsecs.has_value()) {
+    out["nsecs"] = *nsecs;
+  }
+  if (secs.has_value()) {
+    const auto ms = static_cast<std::int64_t>(*secs) * 1000 +
+                    (nsecs.value_or(0) / 1000000);
+    out["as_unix_ms"] = ms;
+    char buf[48];
+    std::snprintf(
+        buf,
+        sizeof(buf),
+        "%d.%09d",
+        *secs,
+        nsecs.value_or(0));
+    out["text"] = buf;
+  }
+  return out;
+}
+
+nlohmann::json resultStampCompare(const nlohmann::json& message) {
+  const auto local_ms = localUnixMs();
+  nlohmann::json out{
+      {"local_iso", localIsoNow()},
+      {"local_unix_ms", local_ms},
+  };
+  if (message.contains("header") && message["header"].is_object() &&
+      message["header"].contains("stamp")) {
+    out["result_header_stamp"] = stampToJson(message["header"]["stamp"]);
+  }
+  if (message.contains("result") && message["result"].is_object() &&
+      message["result"].contains("header") &&
+      message["result"]["header"].is_object() &&
+      message["result"]["header"].contains("stamp")) {
+    out["result_inner_stamp"] = stampToJson(message["result"]["header"]["stamp"]);
+  }
+  if (message.contains("status") && message["status"].is_object() &&
+      message["status"].contains("goal_id") &&
+      message["status"]["goal_id"].is_object() &&
+      message["status"]["goal_id"].contains("stamp")) {
+    out["goal_accepted_stamp"] = stampToJson(message["status"]["goal_id"]["stamp"]);
+  }
+  if (out.contains("result_header_stamp") &&
+      out["result_header_stamp"].contains("as_unix_ms")) {
+    out["local_minus_result_ms"] =
+        local_ms - out["result_header_stamp"]["as_unix_ms"].get<std::int64_t>();
+  }
+  return out;
+}
+
+struct NavHandoff {
+  std::string goal_id;
+  std::chrono::steady_clock::time_point decided_at{};
+  std::chrono::system_clock::time_point decided_wall{};
+  double x{0};
+  double y{0};
+  double yaw{0};
+  bool has_decision{false};
+};
+
+struct NavPendingGoal {
+  std::string goal_id;
+  double x{0};
+  double y{0};
+  double yaw{0};
+  std::chrono::system_clock::time_point dispatched_wall{};
+  bool has_dispatched_wall{false};
+};
+
+std::mutex g_nav_handoff_mutex;
+std::unordered_map<std::string, NavHandoff> g_nav_handoff;
+std::unordered_map<std::string, NavPendingGoal> g_nav_pending;
 
 nlohmann::json makeGenericActionGoal(
     const std::string& goal_id, const nlohmann::json& goal) {
@@ -520,6 +635,43 @@ RosDispatchResult RobotRuntime::sendNavigationGoalTracked(
 
   const auto msg = makeNavigationActionGoal(
       goal.command_id, x, y, yaw, options);
+  const bool has_result_listener = static_cast<bool>(handler);
+  nlohmann::json handoff_log{
+      {"local_iso", localIsoNow()},
+      {"local_unix_ms", localUnixMs()},
+      {"new_goal_id", goal.command_id},
+      {"new_x", x},
+      {"new_y", y},
+      {"new_yaw", yaw},
+      {"robot_id", robot.id},
+  };
+  {
+    std::lock_guard lock(g_nav_handoff_mutex);
+    g_nav_pending[robot.id] = NavPendingGoal{goal.command_id, x, y, yaw};
+    const auto it = g_nav_handoff.find(robot.id);
+    if (it != g_nav_handoff.end() && it->second.has_decision) {
+      const auto gap_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::steady_clock::now() -
+                              it->second.decided_at)
+                              .count();
+      handoff_log["prev_goal_id"] = it->second.goal_id;
+      handoff_log["prev_x"] = it->second.x;
+      handoff_log["prev_y"] = it->second.y;
+      handoff_log["prev_yaw"] = it->second.yaw;
+      handoff_log["ms_since_decided_success"] = gap_ms;
+      const auto decided_ms =
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              it->second.decided_wall.time_since_epoch())
+              .count();
+      handoff_log["prev_decided_unix_ms"] = decided_ms;
+    } else {
+      handoff_log["ms_since_decided_success"] = nullptr;
+    }
+  }
+  ops::OpsLog::instance().info(
+      "nav",
+      "navigation timing decided-success to next goal",
+      handoff_log);
   auto dispatched = publishRos1ActionGoal(
       session_state,
       *robot.nav_action,
@@ -539,12 +691,30 @@ RosDispatchResult RobotRuntime::sendNavigationGoalTracked(
     return dispatched;
   }
   repository_.updateOutboxState(goal.outbox_id, "SENT");
+  const auto dispatched_at = std::chrono::system_clock::now();
+  {
+    std::lock_guard lock(g_nav_handoff_mutex);
+    auto it = g_nav_pending.find(robot.id);
+    if (it != g_nav_pending.end() && it->second.goal_id == goal.command_id) {
+      it->second.dispatched_wall = dispatched_at;
+      it->second.has_dispatched_wall = true;
+    }
+  }
+  const auto dispatched_iso = localIsoAt(dispatched_at);
   ops::OpsLog::instance().info(
       "nav",
-      "navigation goal sent: " + robot.name,
+      "navigation goal dispatched at " + dispatched_iso + ": " + robot.name,
       {{"robot_id", robot.id},
        {"command_id", goal.command_id},
-       {"topic", actionGoalTopic(*robot.nav_action)},
+       {"outbox_id", goal.outbox_id},
+       {"dispatched_at", dispatched_iso},
+       {"dispatched_unix_ms", unixMsAt(dispatched_at)},
+       {"has_result_listener", has_result_listener},
+       {"action", *robot.nav_action},
+       {"action_type", *robot.nav_action_type},
+       {"goal_topic", actionGoalTopic(*robot.nav_action)},
+       {"feedback_topic", actionTopic(*robot.nav_action, "/feedback")},
+       {"result_topic", actionTopic(*robot.nav_action, "/result")},
        {"x", x},
        {"y", y},
        {"yaw", yaw},
@@ -610,85 +780,226 @@ RosDispatchResult RobotRuntime::publishRos1ActionGoal(
     return {.error = "robot session is unavailable"};
   }
 
+  const auto feedback_topic = actionTopic(action_name, "/feedback");
+  const auto result_topic = actionTopic(action_name, "/result");
+  const auto feedback_type = actionEnvelopeType(action_type, "Feedback");
+  const auto result_type = actionEnvelopeType(action_type, "Result");
+  const bool listen = static_cast<bool>(handler) || zj_navigation_status;
+
   struct SubscriptionState {
     std::string feedback_id;
     std::string result_id;
   };
   auto subscriptions = std::make_shared<SubscriptionState>();
+  auto finished = std::make_shared<std::atomic<bool>>(false);
+  auto dispatched_at =
+      std::make_shared<std::optional<std::chrono::system_clock::time_point>>();
+  auto complete = [session_state,
+                   subscriptions,
+                   goal_id,
+                   handler,
+                   zj_navigation_status,
+                   finished,
+                   result_topic,
+                   dispatched_at](const Json& message, bool success) {
+    bool expected = false;
+    if (!finished->compare_exchange_strong(expected, true)) {
+      ops::OpsLog::instance().info(
+          "nav",
+          "navigation complete ignored (already finished)",
+          {{"goal_id", goal_id},
+           {"success", success},
+           {"nav_state", navigationStateCode(message).value_or(-1)},
+           {"actionlib_status", actionlibGoalStatus(message).value_or(-1)}});
+      return;
+    }
+    if (zj_navigation_status) {
+      const auto decided_at = std::chrono::system_clock::now();
+      const auto decided_iso = localIsoAt(decided_at);
+      std::optional<std::chrono::system_clock::time_point> sent_at =
+          *dispatched_at;
+      if (!sent_at.has_value()) {
+        std::lock_guard lock(g_nav_handoff_mutex);
+        const auto pending = g_nav_pending.find(session_state->config.id);
+        if (pending != g_nav_pending.end() &&
+            pending->second.goal_id == goal_id &&
+            pending->second.has_dispatched_wall) {
+          sent_at = pending->second.dispatched_wall;
+        }
+      }
+      auto timing = resultStampCompare(message);
+      timing["goal_id"] = goal_id;
+      timing["topic"] = result_topic;
+      timing["nav_state"] = navigationStateCode(message).value_or(-1);
+      timing["actionlib_status"] = actionlibGoalStatus(message).value_or(-1);
+      timing["status_text"] = actionResultError(message);
+      timing["succeeded_at"] = decided_iso;
+      timing["decided_unix_ms"] = unixMsAt(decided_at);
+      timing["msg"] = message;
+      std::string log_message =
+          (success ? "navigation task SUCCEEDED at "
+                   : "navigation task FAILED at ") +
+          decided_iso;
+      if (sent_at.has_value()) {
+        const auto dispatched_iso = localIsoAt(*sent_at);
+        const auto elapsed_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                decided_at - *sent_at)
+                .count();
+        timing["dispatched_at"] = dispatched_iso;
+        timing["dispatched_unix_ms"] = unixMsAt(*sent_at);
+        timing["elapsed_ms"] = elapsed_ms;
+        log_message += "; dispatched at " + dispatched_iso +
+                       "; elapsed_ms=" + std::to_string(elapsed_ms);
+      } else {
+        timing["dispatched_at"] = nullptr;
+        log_message += "; dispatched at unknown";
+      }
+      ops::OpsLog::instance().info("nav", std::move(log_message), timing);
+      if (success) {
+        std::lock_guard lock(g_nav_handoff_mutex);
+        NavHandoff handoff;
+        handoff.goal_id = goal_id;
+        handoff.decided_at = std::chrono::steady_clock::now();
+        handoff.decided_wall = std::chrono::system_clock::now();
+        handoff.has_decision = true;
+        const auto robot_id = session_state->config.id;
+        const auto pending = g_nav_pending.find(robot_id);
+        if (pending != g_nav_pending.end() &&
+            pending->second.goal_id == goal_id) {
+          handoff.x = pending->second.x;
+          handoff.y = pending->second.y;
+          handoff.yaw = pending->second.yaw;
+        }
+        g_nav_handoff[robot_id] = std::move(handoff);
+      }
+    }
+    const auto error = actionResultError(message);
+    if (!subscriptions->feedback_id.empty()) {
+      (void)session_state->session->unsubscribe(subscriptions->feedback_id);
+    }
+    if (!subscriptions->result_id.empty()) {
+      (void)session_state->session->unsubscribe(subscriptions->result_id);
+    }
+    if (handler) {
+      handler(RosCommandEvent{
+          .kind = RosCommandEvent::Kind::Result,
+          .correlation_id = goal_id,
+          .success = success,
+          .values = message,
+          .error = error,
+      });
+    }
+  };
 
   std::lock_guard lock(session_state->session_mutex);
-  if (handler) {
-    subscriptions->feedback_id = session_state->session->subscribe(
-        actionTopic(action_name, "/feedback"),
-        actionEnvelopeType(action_type, "Feedback"),
-        {},
-        [goal_id, handler](std::string_view, const Json& message) {
-          const auto incoming_id = actionMessageGoalId(message);
-          if (!incoming_id.empty() && incoming_id != goal_id) {
-            return;
-          }
-          handler(RosCommandEvent{
-              .kind = RosCommandEvent::Kind::Feedback,
-              .correlation_id = goal_id,
-              .success = true,
-              .values = message,
+  if (listen) {
+    ops::OpsLog::instance().info(
+        "nav",
+        zj_navigation_status
+            ? "subscribing navigation /result only (skip /feedback)"
+            : "subscribing navigation action topics",
+        {{"goal_id", goal_id},
+         {"feedback_topic", feedback_topic},
+         {"feedback_type", feedback_type},
+         {"result_topic", result_topic},
+         {"result_type", result_type},
+         {"skip_feedback", zj_navigation_status},
+         {"has_handler", static_cast<bool>(handler)}});
+    // Navigation feedback is high-rate. Handling it on the rosbridge thread
+    // (DB writes + event eval) delayed /result by tens of seconds. Succeeded
+    // and Failed both arrive on /result; skip /feedback for zj_humanoid nav.
+    if (!zj_navigation_status) {
+      auto last_feedback_nav = std::make_shared<std::optional<int>>();
+      auto last_feedback_lib = std::make_shared<std::optional<int>>();
+      subscriptions->feedback_id = session_state->session->subscribe(
+          feedback_topic,
+          feedback_type,
+          {.throttle_rate_ms = 0, .queue_length = 10},
+          [goal_id,
+           handler,
+           last_feedback_nav,
+           last_feedback_lib,
+           feedback_topic](std::string_view, const Json& message) {
+            const auto incoming_id = actionMessageGoalId(message);
+            if (!incoming_id.empty() && incoming_id != goal_id) {
+              return;
+            }
+            const auto nav = navigationStateCode(message);
+            const auto lib = actionlibGoalStatus(message);
+            const bool state_changed =
+                !last_feedback_nav->has_value() ||
+                *last_feedback_nav != nav ||
+                !last_feedback_lib->has_value() ||
+                *last_feedback_lib != lib;
+            if (state_changed) {
+              *last_feedback_nav = nav;
+              *last_feedback_lib = lib;
+              ops::OpsLog::instance().info(
+                  "nav",
+                  "navigation /feedback state changed",
+                  {{"goal_id", goal_id},
+                   {"topic", feedback_topic},
+                   {"incoming_goal_id", incoming_id},
+                   {"nav_state", nav.value_or(-1)},
+                   {"actionlib_status", lib.value_or(-1)},
+                   {"status_text", actionResultError(message)}});
+            }
+            if (handler) {
+              handler(RosCommandEvent{
+                  .kind = RosCommandEvent::Kind::Feedback,
+                  .correlation_id = goal_id,
+                  .success = true,
+                  .values = message,
+              });
+            }
           });
-        });
+    }
     subscriptions->result_id = session_state->session->subscribe(
-        actionTopic(action_name, "/result"),
-        actionEnvelopeType(action_type, "Result"),
-        {},
-        [session_state, subscriptions, goal_id, handler, zj_navigation_status](
+        result_topic,
+        result_type,
+        {.throttle_rate_ms = 0, .queue_length = 10},
+        [goal_id, zj_navigation_status, complete, result_topic](
             std::string_view, const Json& message) {
           const auto incoming_id = actionMessageGoalId(message);
+          const auto nav = navigationStateCode(message);
+          const auto lib = actionlibGoalStatus(message);
+          ops::OpsLog::instance().info(
+              "nav",
+              "navigation timing result vs local",
+              [&] {
+                auto detail = resultStampCompare(message);
+                detail["expected_goal_id"] = goal_id;
+                detail["incoming_goal_id"] = incoming_id;
+                detail["nav_state"] = nav.value_or(-1);
+                detail["actionlib_status"] = lib.value_or(-1);
+                return detail;
+              }());
           if (!incoming_id.empty() && incoming_id != goal_id) {
-            ops::OpsLog::instance().info(
+            ops::OpsLog::instance().warn(
                 "nav",
-                "ignored action result (goal id mismatch)",
+                "ignored /result (goal id mismatch)",
                 {{"expected", goal_id}, {"incoming", incoming_id}});
             return;
           }
           const auto outcome =
               actionResultSucceeded(message, zj_navigation_status);
           if (!outcome.has_value()) {
-            const auto nav = navigationStateCode(message);
-            const auto lib = actionlibGoalStatus(message);
             ops::OpsLog::instance().warn(
                 "nav",
-                "navigation result is not terminal yet",
+                "navigation /result is not terminal yet",
                 {{"goal_id", goal_id},
                  {"nav_state", nav.value_or(-1)},
                  {"actionlib_status", lib.value_or(-1)}});
             return;
           }
-          const bool success = *outcome;
-          if (zj_navigation_status) {
-            ops::OpsLog::instance().info(
-                "nav",
-                success ? "navigation result succeeded"
-                        : "navigation result failed",
-                {{"goal_id", goal_id},
-                 {"nav_state", navigationStateCode(message).value_or(-1)},
-                 {"actionlib_status",
-                  actionlibGoalStatus(message).value_or(-1)}});
-          }
-          const auto error = actionResultError(message);
-          if (!subscriptions->feedback_id.empty()) {
-            (void)session_state->session->unsubscribe(
-                subscriptions->feedback_id);
-          }
-          if (!subscriptions->result_id.empty()) {
-            (void)session_state->session->unsubscribe(
-                subscriptions->result_id);
-          }
-          handler(RosCommandEvent{
-              .kind = RosCommandEvent::Kind::Result,
-              .correlation_id = goal_id,
-              .success = success,
-              .values = message,
-              .error = error,
-          });
+          complete(message, *outcome);
         });
+  } else {
+    ops::OpsLog::instance().warn(
+        "nav",
+        "navigation goal has no /result listener",
+        {{"goal_id", goal_id}, {"action", action_name}});
   }
 
   const auto goal_topic = actionGoalTopic(action_name);
@@ -703,6 +1014,7 @@ RosDispatchResult RobotRuntime::publishRos1ActionGoal(
     }
     return {.error = "failed to publish ROS1 actionlib goal"};
   }
+  *dispatched_at = std::chrono::system_clock::now();
   return {.accepted = true, .correlation_id = goal_id};
 }
 

@@ -985,12 +985,58 @@ void testActionResultParsing() {
   expect(nested_ok.has_value() && *nested_ok,
          "ActionResult GoalStatus=3 and NavigationState=6 should succeed");
 
-  const auto waiting = actionResultSucceeded(
+  // Vehicle rostopic echo /zj_humanoid/navigation/navigation/result
+  const json vehicle_result = {
+      {"header",
+       {{"seq", 41},
+        {"stamp", {{"secs", 1788856500}, {"nsecs", 981770511}}},
+        {"frame_id", ""}}},
+      {"status",
+       {{"goal_id",
+         {{"stamp", {{"secs", 1788856495}, {"nsecs", 211368876}}},
+          {"id", "9e7bd567-e707-4d8e-bea9-8bb1f52c2973"}}},
+        {"status", 3},
+        {"text", ""}}},
+      {"result",
+       {{"header",
+         {{"seq", 0},
+          {"stamp", {{"secs", 1788856500}, {"nsecs", 981745134}}},
+          {"frame_id", ""}}},
+        {"duration", {{"secs", 5}, {"nsecs", 770126905}}},
+        {"distance_deviation", 0.003069798689085083},
+        {"heading_deviation", 0.5168647558594399},
+        {"state", {{"value", 6}}},
+        {"causes", json::array()}}}};
+  expect(actionMessageGoalId(vehicle_result) ==
+             "9e7bd567-e707-4d8e-bea9-8bb1f52c2973",
+         "vehicle /result goal_id should match");
+  const auto vehicle_ok = actionResultSucceeded(vehicle_result, true);
+  expect(vehicle_ok.has_value() && *vehicle_ok,
+         "vehicle /result status=3 and state.value=6 should succeed");
+
+  const auto arrived_feedback = actionResultSucceeded(
+      json{{"status",
+            {{"status", 1},
+             {"text", "This goal has been accepted by the simple action server"},
+             {"goal_id", {{"id", "cmd-1"}}}}},
+           {"feedback", {{"state", {{"value", 3}}}, {"faults", json::array()}}}},
+      true);
+  expect(!arrived_feedback.has_value(),
+         "feedback Arrived(3) should wait for /result Succeeded(6)");
+
+  const auto running_feedback = actionResultSucceeded(
       json{{"status", {{"status", 1}, {"goal_id", {{"id", "cmd-1"}}}}},
+           {"feedback", {{"state", {{"value", 2}}}}}},
+      true);
+  expect(!running_feedback.has_value(),
+         "feedback NavigationState Running(2) should keep waiting");
+
+  const auto arrived_result = actionResultSucceeded(
+      json{{"status", {{"status", 3}, {"goal_id", {{"id", "cmd-1"}}}}},
            {"result", {{"state", {{"value", 3}}}}}},
       true);
-  expect(!waiting.has_value(),
-         "NavigationState Arrived(3) without actionlib SUCCEEDED should wait");
+  expect(!arrived_result.has_value(),
+         "NavigationState Arrived(3) should wait for Succeeded(6)");
 
   const auto only_actionlib = actionResultSucceeded(
       json{{"status", {{"status", 3}, {"goal_id", {{"id", "cmd-1"}}}}}},

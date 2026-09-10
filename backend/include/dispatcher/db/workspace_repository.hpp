@@ -327,6 +327,8 @@ struct NodeRunRecord {
   nlohmann::json input_data = nlohmann::json::object();
   nlohmann::json output_data = nlohmann::json::object();
   nlohmann::json error_data;
+  std::optional<std::string> started_at;
+  std::optional<std::string> finished_at;
 };
 
 struct CommandRunRecord {

@@ -11,6 +11,9 @@
 
 namespace dispatcher::ops {
 
+std::string localIsoNow();
+std::int64_t localUnixMs();
+
 struct OpsLogEntry {
   std::int64_t id{0};
   std::string level;   // info | warn | error
@@ -30,6 +33,8 @@ class OpsLog {
             nlohmann::json detail = nlohmann::json::object());
   void error(std::string source, std::string message,
              nlohmann::json detail = nlohmann::json::object());
+
+  void clear();
 
   [[nodiscard]] std::vector<OpsLogEntry> list(
       std::size_t limit = 100, std::int64_t after_id = 0) const;
