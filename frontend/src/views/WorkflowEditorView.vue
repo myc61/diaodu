@@ -1443,7 +1443,7 @@ onBeforeUnmount(() => {
           <h4>连线</h4>
           <p class="hint-text">
             服务/动作节点底部<strong>绿点</strong>拉成功边，右侧<strong>红点</strong>拉失败边。
-            START 只有成功边。
+            START 只有成功边。多条成功边或事件边汇入同一节点时，会等这些边都满足后再执行。
           </p>
           <label>
             <input v-model="connectEdgeKind" type="radio" value="success" />

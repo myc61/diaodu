@@ -270,7 +270,11 @@ const runtimeNodes = computed(() =>
         runtime_state: state,
         dispatcher_dispatched_at: timing.dispatched,
         dispatcher_decided_at: timing.decided,
-        robot_result_stamp: timing.robot
+        robot_result_stamp: timing.robot,
+        join_waiting_on:
+          state === "PENDING" && Array.isArray(run?.output_data?.join_waiting_on)
+            ? run?.output_data?.join_waiting_on
+            : []
       },
       class: `runtime-node runtime-node-${state.toLowerCase()}`
     };
@@ -742,6 +746,20 @@ onBeforeUnmount(() => {
                 <strong>{{ nodeLabel(node) }}</strong>
                 <small v-if="node.assigned_robot_id">
                   robot {{ node.assigned_robot_id.slice(0, 8) }}
+                </small>
+                <small
+                  v-if="
+                    node.state === 'PENDING' &&
+                    Array.isArray(node.output_data?.join_waiting_on) &&
+                    (node.output_data.join_waiting_on as unknown[]).length > 0
+                  "
+                >
+                  等待汇合
+                  {{
+                    (node.output_data.join_waiting_on as unknown[])
+                      .map((item) => String(item))
+                      .join("、")
+                  }}
                 </small>
               </div>
               <div

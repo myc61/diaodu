@@ -13,6 +13,7 @@
 #include "dispatcher/ros/pose_mapper.hpp"
 #include "dispatcher/remote/controlled_ssh_executor.hpp"
 #include "dispatcher/ros/ros_typedef_schema.hpp"
+#include "dispatcher/workflow/edge_join.hpp"
 #include "dispatcher/workflow/event_spec.hpp"
 #include "dispatcher/workflow/feedback_trigger.hpp"
 
@@ -733,6 +734,98 @@ void testEventSpecPredicate() {
       "outbound TOPIC capabilities must reject FEEDBACK event specs");
 }
 
+void testEdgeJoin() {
+  using dispatcher::workflow::evaluateJoin;
+  using nlohmann::json;
+
+  const json edges = json::array(
+      {{{"id", "e1"},
+        {"source", "A"},
+        {"target", "C"},
+        {"edge_kind", "success"}},
+       {{"id", "e2"},
+        {"source", "B"},
+        {"target", "C"},
+        {"edge_kind", "success"}},
+       {{"id", "e3"},
+        {"source", "D"},
+        {"target", "C"},
+        {"edge_kind", "failure"}}});
+
+  const auto waiting = evaluateJoin(
+      edges,
+      "C",
+      1,
+      {{"A", "SUCCEEDED"}, {"B", "RUNNING"}},
+      {});
+  expect(!waiting.ready, "two success incoming should wait for both");
+  expect(
+      waiting.waiting_on.size() == 1 && waiting.waiting_on[0] == "B",
+      "join should report the unfinished success predecessor");
+
+  const auto ready = evaluateJoin(
+      edges,
+      "C",
+      1,
+      {{"A", "SUCCEEDED"}, {"B", "SUCCEEDED"}},
+      {});
+  expect(ready.ready, "both success predecessors should release the join");
+  expect(ready.waiting_on.empty(), "ready join should not wait");
+
+  const json event_edges = json::array(
+      {{{"id", "ev1"},
+        {"source", "A"},
+        {"target", "C"},
+        {"edge_kind", "event"},
+        {"event_name", "done_a"}},
+       {{"id", "ev2"},
+        {"source", "B"},
+        {"target", "C"},
+        {"edge_kind", "event"},
+        {"event_name", "done_b"}}});
+  const json first_event{
+      {"edge_id", "ev1"},
+      {"source", "A"},
+      {"target", "C"},
+      {"edge_kind", "event"},
+      {"event_name", "done_a"},
+      {"attempt", 1}};
+  const auto event_waiting = evaluateJoin(
+      event_edges, "C", 1, {}, {first_event});
+  expect(!event_waiting.ready, "two event incoming should wait for both");
+
+  const json second_event{
+      {"edge_id", "ev2"},
+      {"source", "B"},
+      {"target", "C"},
+      {"edge_kind", "event"},
+      {"event_name", "done_b"},
+      {"attempt", 1}};
+  const auto event_ready = evaluateJoin(
+      event_edges, "C", 1, {}, {first_event, second_event});
+  expect(event_ready.ready, "both event edges should release the join");
+
+  const json stale{
+      {"edge_id", "ev2"},
+      {"source", "B"},
+      {"target", "C"},
+      {"edge_kind", "event"},
+      {"event_name", "done_b"},
+      {"attempt", 1}};
+  const auto wrong_cycle = evaluateJoin(
+      event_edges, "C", 2, {}, {first_event, stale});
+  expect(!wrong_cycle.ready, "previous cycle event traversal must not join");
+
+  const json single = json::array(
+      {{{"id", "s1"},
+        {"source", "START"},
+        {"target", "A"},
+        {"edge_kind", "success"}}});
+  const auto single_ready = evaluateJoin(
+      single, "A", 1, {{"START", "SUCCEEDED"}}, {});
+  expect(single_ready.ready, "single success incoming should activate immediately");
+}
+
 void testRosbridgeMessages() {
   using dispatcher::ros::Json;
   using dispatcher::ros::RosbridgeMessageFactory;
@@ -1120,6 +1213,7 @@ int main() {
   testMapImportCore();
   testFeedbackTrigger();
   testEventSpecPredicate();
+  testEdgeJoin();
   testRosTypedefSchema();
   testRosbridgeMessages();
   testRosbridgeSession();

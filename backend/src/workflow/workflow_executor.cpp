@@ -1,12 +1,14 @@
 #include "dispatcher/workflow/workflow_executor.hpp"
 #include "dispatcher/ops/ops_log.hpp"
 #include "dispatcher/ros/action_result.hpp"
+#include "dispatcher/workflow/edge_join.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <stdexcept>
 #include <string_view>
+#include <unordered_map>
 
 namespace dispatcher::workflow {
 namespace {
@@ -470,19 +472,73 @@ std::size_t WorkflowExecutor::followEdges(
     const auto edge_id = edge.value("id", "");
     const auto target_key = edge.value("target", "");
     const int cycle = detail.run.context_data.value("current_cycle", 1);
+    nlohmann::json traversed_payload{
+        {"edge_id", edge_id},
+        {"source", source_key},
+        {"target", target_key},
+        {"edge_kind", edge_kind},
+        {"event_name", event_name},
+        {"attempt", cycle},
+        {"dispatcher_at", ops::localIsoNow()},
+        {"dispatcher_unix_ms", ops::localUnixMs()}};
     (void)repository_.insertWorkflowEvent(
         detail.run.id,
         std::nullopt,
         "workflow.edge.traversed",
-        {{"edge_id", edge_id},
-         {"source", source_key},
-         {"target", target_key},
-         {"edge_kind", edge_kind},
-         {"event_name", event_name},
-         {"attempt", cycle},
-         {"dispatcher_at", ops::localIsoNow()},
-         {"dispatcher_unix_ms", ops::localUnixMs()}},
+        traversed_payload,
         std::nullopt);
+    detail.events.push_back(db::WorkflowEventRecord{
+        .workflow_run_id = detail.run.id,
+        .event_type = "workflow.edge.traversed",
+        .payload = traversed_payload,
+    });
+    if (edge_kind != "failure") {
+      std::unordered_map<std::string, std::string> latest_states;
+      for (auto it = detail.nodes.rbegin(); it != detail.nodes.rend(); ++it) {
+        if (latest_states.find(it->node_key) == latest_states.end()) {
+          latest_states.emplace(it->node_key, it->state);
+        }
+      }
+      std::vector<nlohmann::json> traversed;
+      traversed.reserve(detail.events.size());
+      for (const auto& ev : detail.events) {
+        if (ev.event_type == "workflow.edge.traversed") {
+          traversed.push_back(ev.payload);
+        }
+      }
+      const auto join = evaluateJoin(
+          detail.graph.value("edges", nlohmann::json::array()),
+          target_key,
+          cycle,
+          latest_states,
+          traversed);
+      if (!join.ready) {
+        ops::OpsLog::instance().info(
+            "workflow",
+            "join waiting for remaining incoming edges",
+            {{"target", target_key},
+             {"arrived_source", source_key},
+             {"edge_kind", edge_kind},
+             {"event_name", event_name},
+             {"waiting_on", nlohmann::json(join.waiting_on)}});
+        if (auto* target = findNode(detail, target_key);
+            target != nullptr && target->state == "PENDING") {
+          auto output = target->output_data.is_object()
+              ? target->output_data
+              : nlohmann::json::object();
+          output["join_waiting"] = true;
+          output["join_waiting_on"] = nlohmann::json(join.waiting_on);
+          repository_.updateNodeRun(
+              target->id,
+              "PENDING",
+              target->assigned_robot_id,
+              output,
+              nlohmann::json());
+          target->output_data = output;
+        }
+        continue;
+      }
+    }
     activateNode(detail, target_key);
     ++followed;
   }
@@ -1081,14 +1137,19 @@ void WorkflowExecutor::executeNode(
         nlohmann::json());
     const auto run_id = detail.run.id;
     const auto node_run_id = node.id;
-    scheduleAfter(std::chrono::milliseconds(delay_ms), [this, run_id, node_run_id] {
-      auto detail = repository_.getWorkflowRun(run_id);
+    const auto gate = callback_gate_;
+    scheduleAfter(std::chrono::milliseconds(delay_ms), [gate, run_id, node_run_id] {
+      std::lock_guard lock(gate->mutex);
+      if (gate->owner == nullptr) {
+        return;
+      }
+      auto detail = gate->owner->repository_.getWorkflowRun(run_id);
       if (!detail.has_value() || detail->run.state != "RUNNING") {
         return;
       }
       for (const auto& candidate : detail->nodes) {
         if (candidate.id == node_run_id && candidate.state == "RUNNING") {
-          completeNode(
+          gate->owner->completeNode(
               *detail,
               candidate.node_key,
               nlohmann::json{{"delay_ms", candidate.output_data.value("delay_ms", 0)},

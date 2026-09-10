@@ -22,6 +22,16 @@ const decidedAt = computed(() =>
 const robotStamp = computed(() =>
   props.data?.robot_result_stamp ? String(props.data.robot_result_stamp) : ""
 );
+const joinWaiting = computed(() => {
+  if (String(props.data?.runtime_state ?? "") !== "PENDING") {
+    return "";
+  }
+  const waiting = props.data?.join_waiting_on;
+  if (!Array.isArray(waiting) || waiting.length === 0) {
+    return "";
+  }
+  return waiting.map((item) => String(item)).join("、");
+});
 const isStart = computed(() => nodeType.value === "START");
 const isEnd = computed(() => nodeType.value === "END");
 const showTarget = computed(() => !isStart.value);
@@ -49,6 +59,7 @@ const showFailure = computed(() => !isStart.value && !isEnd.value);
     <div class="dispatch-kind">{{ nodeType }}</div>
     <div class="dispatch-label">{{ label }}</div>
     <div v-if="runtimeState" class="dispatch-runtime">{{ runtimeState }}</div>
+    <div v-if="joinWaiting" class="dispatch-join">等待 {{ joinWaiting }}</div>
     <div v-if="dispatchedAt || decidedAt || robotStamp" class="dispatch-timing">
       <span v-if="dispatchedAt">下发 {{ dispatchedAt }}</span>
       <span v-if="decidedAt">
@@ -124,6 +135,13 @@ const showFailure = computed(() => !isStart.value && !isEnd.value);
   color: #4d5c56;
   font-size: 11px;
   font-family: var(--mono, ui-monospace, monospace);
+}
+
+.dispatch-join {
+  margin-top: 4px;
+  color: #b7791f;
+  font-size: 10px;
+  line-height: 1.35;
 }
 
 .dispatch-timing {
