@@ -5,6 +5,7 @@ import {
   MarkerType,
   VueFlow,
   addEdge,
+  useVueFlow,
   type Connection,
   type NodeTypesObject
 } from "@vue-flow/core";
@@ -17,7 +18,16 @@ import {
   Undo2,
   Upload
 } from "lucide-vue-next";
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import {
+  computed,
+  nextTick,
+  onActivated,
+  onBeforeUnmount,
+  onDeactivated,
+  onMounted,
+  ref,
+  watch
+} from "vue";
 import { useRouter } from "vue-router";
 
 import { startWorkflowRun } from "../api/runs";
@@ -39,6 +49,13 @@ import type {
   WorkflowSummary,
   WorkflowTriggerType
 } from "../types/workflow";
+import {
+  clearWorkflowDraft,
+  loadWorkflowDraft,
+  saveWorkflowDraft
+} from "../utils/workflowDraft";
+
+defineOptions({ name: "WorkflowEditorView" });
 
 type FlowNode = {
   id: string;
@@ -66,6 +83,9 @@ type FlowEdge = {
 const nodeTypes: NodeTypesObject = {
   dispatch: WorkflowGraphNode
 };
+
+const FLOW_ID = "workflow-editor";
+const { updateNodeInternals } = useVueFlow({ id: FLOW_ID });
 
 type GraphSnapshot = {
   nodes: FlowNode[];
@@ -104,6 +124,10 @@ const navRobotId = ref("");
 /** Robot assigned when adding a point-independent capability node. */
 const capabilityRobotId = ref("");
 const router = useRouter();
+let hydrating = false;
+let persistTimer: number | undefined;
+const lastSavedFingerprint = ref("");
+const didBootstrap = ref(false);
 
 const selectedNode = computed(
   () => nodes.value.find((node) => node.id === selectedNodeId.value) ?? null
@@ -231,6 +255,9 @@ const publishedLabel = computed(() => {
   }
   return `已发布 v${item.published_version}`;
 });
+const isDirty = computed(
+  () => editorFingerprint() !== lastSavedFingerprint.value
+);
 
 function defaultStartEnd(): FlowNode[] {
   return [
@@ -253,6 +280,124 @@ function defaultStartEnd(): FlowNode[] {
 
 function cloneGraph<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function persistableNodes(value: FlowNode[]): FlowNode[] {
+  return value.map((node) => ({
+    id: node.id,
+    type: node.type,
+    position: {
+      x: Number(node.position?.x ?? 0),
+      y: Number(node.position?.y ?? 0)
+    },
+    label: node.label,
+    data: cloneGraph(node.data ?? {})
+  }));
+}
+
+function persistableEdges(value: FlowEdge[]): FlowEdge[] {
+  return value.map((edge) => ({
+    id: edge.id,
+    source: edge.source,
+    target: edge.target,
+    sourceHandle: edge.sourceHandle,
+    targetHandle: edge.targetHandle,
+    label: edge.label,
+    animated: edge.animated,
+    data: cloneGraph(edge.data ?? {}),
+    markerEnd: edge.markerEnd,
+    style: edge.style
+  }));
+}
+
+function editorFingerprint(): string {
+  return JSON.stringify({
+    selectedSceneId: selectedSceneId.value,
+    selectedWorkflowId: selectedWorkflowId.value,
+    workflowName: workflowName.value,
+    workflowDescription: workflowDescription.value,
+    triggerType: triggerType.value,
+    triggerEventName: triggerEventName.value,
+    loopCount: loopCount.value,
+    loopDelayMs: loopDelayMs.value,
+    nodes: persistableNodes(nodes.value),
+    edges: persistableEdges(edges.value)
+  });
+}
+
+function markSaved(): void {
+  lastSavedFingerprint.value = editorFingerprint();
+}
+
+function persistDraftNow(): void {
+  if (hydrating) {
+    return;
+  }
+  saveWorkflowDraft({
+    v: 1,
+    selectedSceneId: selectedSceneId.value,
+    selectedWorkflowId: selectedWorkflowId.value,
+    workflowName: workflowName.value,
+    workflowDescription: workflowDescription.value,
+    triggerType: triggerType.value,
+    triggerEventName: triggerEventName.value,
+    loopCount: loopCount.value,
+    loopDelayMs: loopDelayMs.value,
+    navRobotId: navRobotId.value,
+    capabilityRobotId: capabilityRobotId.value,
+    connectEdgeKind: connectEdgeKind.value,
+    connectEventName: connectEventName.value,
+    lastSavedFingerprint: lastSavedFingerprint.value,
+    nodes: persistableNodes(nodes.value),
+    edges: persistableEdges(edges.value)
+  });
+}
+
+function schedulePersistDraft(): void {
+  if (hydrating) {
+    return;
+  }
+  window.clearTimeout(persistTimer);
+  persistTimer = window.setTimeout(() => {
+    persistDraftNow();
+  }, 400);
+}
+
+function applyDraft(draft: ReturnType<typeof loadWorkflowDraft>): boolean {
+  if (!draft) {
+    return false;
+  }
+  hydrating = true;
+  selectedSceneId.value = draft.selectedSceneId;
+  selectedWorkflowId.value = draft.selectedWorkflowId;
+  workflowName.value = draft.workflowName;
+  workflowDescription.value = draft.workflowDescription;
+  triggerType.value = draft.triggerType as WorkflowTriggerType;
+  triggerEventName.value = draft.triggerEventName;
+  loopCount.value = draft.loopCount;
+  loopDelayMs.value = draft.loopDelayMs;
+  navRobotId.value = draft.navRobotId;
+  capabilityRobotId.value = draft.capabilityRobotId;
+  connectEdgeKind.value = draft.connectEdgeKind;
+  connectEventName.value = draft.connectEventName;
+  nodes.value = draft.nodes.map((node) => ({
+    ...node,
+    type: node.type ?? "dispatch"
+  }));
+  edges.value = draft.edges.map((edge) => ({
+    ...edge,
+    markerEnd: edge.markerEnd
+      ? {
+          type: edge.markerEnd.type as MarkerType,
+          color: edge.markerEnd.color
+        }
+      : undefined
+  }));
+  lastSavedFingerprint.value = draft.lastSavedFingerprint || editorFingerprint();
+  window.setTimeout(() => {
+    hydrating = false;
+  }, 0);
+  return draft.nodes.length > 0 || Boolean(draft.selectedWorkflowId);
 }
 
 function captureGraph(): GraphSnapshot {
@@ -546,6 +691,8 @@ async function handleCreate(): Promise<void> {
     selectedWorkflowId.value = created.id;
     fromApiGraph(created.graph);
     resetGraphHistory();
+    markSaved();
+    persistDraftNow();
     await refreshWorkflows();
     statusMessage.value = `已创建流程 ${created.name}`;
     errorMessage.value = "";
@@ -574,6 +721,8 @@ async function loadSelectedWorkflow(): Promise<void> {
     fromApiGraph(detail.graph);
     await refreshAssets();
     resetGraphHistory();
+    markSaved();
+    persistDraftNow();
     statusMessage.value = `已加载 ${detail.name}`;
     errorMessage.value = "";
   } catch (error) {
@@ -600,6 +749,8 @@ async function handleSave(): Promise<void> {
       graph: toApiGraph()
     });
     await refreshWorkflows();
+    markSaved();
+    persistDraftNow();
     statusMessage.value = "草稿已保存";
     errorMessage.value = "";
   } catch (error) {
@@ -627,6 +778,8 @@ async function handlePublish(): Promise<void> {
     });
     await publishWorkflow(selectedWorkflowId.value);
     await refreshWorkflows();
+    markSaved();
+    persistDraftNow();
     statusMessage.value = "流程已发布（版本不可变）；已生成新草稿供继续编辑";
     errorMessage.value = "";
   } catch (error) {
@@ -670,6 +823,8 @@ async function handleDelete(): Promise<void> {
     nodes.value = defaultStartEnd();
     edges.value = [];
     resetGraphHistory();
+    markSaved();
+    clearWorkflowDraft();
     await refreshWorkflows();
     statusMessage.value = "流程已删除";
   } catch (error) {
@@ -1300,18 +1455,70 @@ const selectedEdgeEntries = computed(() => {
 });
 
 watch(selectedSceneId, () => {
+  if (hydrating) {
+    return;
+  }
   void refreshWorkflows();
   void refreshAssets();
 });
 
+watch(
+  [
+    nodes,
+    edges,
+    selectedSceneId,
+    selectedWorkflowId,
+    workflowName,
+    workflowDescription,
+    triggerType,
+    triggerEventName,
+    loopCount,
+    loopDelayMs
+  ],
+  () => {
+    schedulePersistDraft();
+  },
+  { deep: true }
+);
+
+async function relayoutFlow(): Promise<void> {
+  await nextTick();
+  window.dispatchEvent(new Event("resize"));
+  updateNodeInternals(nodes.value.map((node) => node.id));
+}
+
 onMounted(() => {
-  nodes.value = defaultStartEnd();
+  const restored = applyDraft(loadWorkflowDraft());
+  if (!restored) {
+    nodes.value = defaultStartEnd();
+    markSaved();
+  } else if (isDirty.value) {
+    statusMessage.value = "已恢复上次编排（去地图或其他页不会丢掉未保存改动）";
+  }
+  void bootstrap().then(() => {
+    didBootstrap.value = true;
+  });
+});
+
+onActivated(() => {
   window.addEventListener("keydown", handleWindowKeydown);
-  void bootstrap();
+  if (!didBootstrap.value) {
+    return;
+  }
+  void refreshWorkflows();
+  void refreshAssets();
+  void relayoutFlow();
+});
+
+onDeactivated(() => {
+  window.removeEventListener("keydown", handleWindowKeydown);
+  persistDraftNow();
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", handleWindowKeydown);
+  window.clearTimeout(persistTimer);
+  persistDraftNow();
 });
 </script>
 
@@ -1430,7 +1637,10 @@ onBeforeUnmount(() => {
       >
         <Redo2 :size="16" />
       </button>
-      <span class="workflow-meta">{{ publishedLabel }}</span>
+      <span class="workflow-meta">
+        {{ publishedLabel }}
+        <template v-if="isDirty"> · 未保存</template>
+      </span>
     </header>
 
     <p v-if="statusMessage" class="status-ok">{{ statusMessage }}</p>
@@ -1646,6 +1856,7 @@ onBeforeUnmount(() => {
 
       <div class="workflow-canvas">
         <VueFlow
+          id="workflow-editor"
           v-model:nodes="nodes"
           v-model:edges="edges"
           :node-types="nodeTypes"

@@ -94,7 +94,11 @@ function go(path: string): void {
           </div>
         </header>
         <main class="page-body" :class="{ flush: immersive }">
-          <router-view :key="route.path" />
+          <router-view v-slot="{ Component }">
+            <keep-alive :include="['WorkflowEditorView']">
+              <component :is="Component" />
+            </keep-alive>
+          </router-view>
         </main>
       </div>
     </div>
