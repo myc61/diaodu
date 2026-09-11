@@ -118,6 +118,8 @@ git pull --ff-only
 ./deploy.sh --no-build
 ```
 
+`.env` 必须留在仓库目录。密码只写在这个文件里，`git pull`、换目录或重新 clone 都不会带上它。没有 `.env` 时不要对已有数据卷再跑 `deploy.sh`，否则会生成新密码，dispatcher 连不上旧库。也不要用 `docker compose down -v` 来“修密码”，那会删掉数据库。
+
 需要拉取最新 Docker 基础镜像时：
 
 ```bash
@@ -236,6 +238,8 @@ docker compose exec -T postgres sh -c \
 ./scripts/pack_images.sh import
 ./deploy.sh --no-build
 ```
+
+同一台机器再次部署时带上原来的 `.env`。空目录第一次 `--no-build` 会生成新密码，只能配新数据卷。
 
 包内是 `postgres:16-alpine`、`dispatcher-dispatcher`、`dispatcher-web`。不要用 `git` 提交该 tar。
 

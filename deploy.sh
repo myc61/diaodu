@@ -80,6 +80,10 @@ generate_password() {
   fi
 }
 
+postgres_volume_exists() {
+  docker volume inspect dispatcher_postgres-data >/dev/null 2>&1
+}
+
 ensure_env_file() {
   if [[ -f .env ]]; then
     log "复用现有 .env 配置"
@@ -87,6 +91,10 @@ ensure_env_file() {
       echo "警告：.env 仍使用示例数据库密码 replace_for_site，正式环境请尽快修改。" >&2
     fi
     return
+  fi
+
+  if postgres_volume_exists; then
+    fail "已有 postgres 数据卷，但目录里没有 .env。密码不会写进镜像或数据卷标签里。请恢复原来的 .env 后再执行；不要重新生成密码。若确认可以清空业务数据：docker compose down -v 后重新部署。"
   fi
 
   local db_password="${DISPATCHER_DB_PASSWORD:-$(generate_password)}"
@@ -118,6 +126,27 @@ compose_psql_value() {
   docker compose exec -T postgres sh -c \
     'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "$1"' \
     sh "${sql}" | tr -d '\r\n'
+}
+
+# Fresh volumes run initdb on a temporary server, then restart. pg_isready
+# can pass during that window; wait until dispatch schema survives a pause.
+wait_for_postgres_schema() {
+  local deadline=$((SECONDS + HEALTH_TIMEOUT_SECONDS))
+  local schema=""
+  while ((SECONDS < deadline)); do
+    schema="$(compose_psql_value "SELECT COALESCE(to_regclass('dispatch.scenes')::text, '');" 2>/dev/null || true)"
+    if [[ "${schema}" == "dispatch.scenes" ]]; then
+      sleep 2
+      schema="$(compose_psql_value "SELECT COALESCE(to_regclass('dispatch.scenes')::text, '');" 2>/dev/null || true)"
+      if [[ "${schema}" == "dispatch.scenes" ]]; then
+        log "postgres 库表已就绪"
+        return 0
+      fi
+    fi
+    sleep 2
+  done
+  docker compose logs --tail=80 postgres >&2 || true
+  fail "等待 postgres 完成初始化超时。可再执行一次 ./deploy.sh --no-build，不要删除 .env 或数据卷。"
 }
 
 apply_migration() {
@@ -161,9 +190,18 @@ backup_database() {
   chmod 700 backups
   local backup_path="backups/dispatcher-before-migration-$(date '+%Y%m%d-%H%M%S').sql"
   log "升级旧数据库前备份到 ${backup_path}"
-  docker compose exec -T postgres sh -c \
-    'pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' > "${backup_path}"
-  chmod 600 "${backup_path}"
+  local attempt
+  for attempt in 1 2 3 4 5 6; do
+    if docker compose exec -T postgres sh -c \
+        'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null && pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' \
+        > "${backup_path}"; then
+      chmod 600 "${backup_path}"
+      return 0
+    fi
+    rm -f "${backup_path}"
+    sleep 2
+  done
+  fail "备份数据库失败。请确认 postgres 已完全启动后再执行 ./deploy.sh --no-build。"
 }
 
 upgrade_legacy_database() {
@@ -231,6 +269,7 @@ fi
 log "启动 PostgreSQL"
 docker compose up -d postgres
 wait_for_service postgres
+wait_for_postgres_schema
 upgrade_legacy_database
 
 log "启动 dispatcher 和 web"
