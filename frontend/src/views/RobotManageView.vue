@@ -26,6 +26,7 @@ import {
 } from "../api/robots";
 import type { RobotConfig, RobotUpsertPayload } from "../types/robot";
 import type { RobotStartupProfile } from "../types/workflow";
+import { batteryPercentText } from "../utils/battery";
 
 const robots = ref<RobotConfig[]>([]);
 const selectedId = ref<string>("");
@@ -484,6 +485,9 @@ onMounted(() => {
             <small>
               {{ robot.host || "-" }}:{{ robot.rosbridge_port || "-" }} ·
               {{ robot.localization_status }}
+              <template v-if="batteryPercentText(robot.battery)">
+                · 电量 {{ batteryPercentText(robot.battery) }}
+              </template>
             </small>
           </n-space>
         </button>

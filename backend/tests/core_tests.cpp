@@ -140,6 +140,36 @@ void testExecutionRuntime() {
   expect(!runtime.postParallel([] {}), "joined runtime should reject tasks");
 }
 
+void testDelayedRobotTask() {
+  using namespace std::chrono_literals;
+  using dispatcher::concurrency::ExecutionRuntime;
+
+  {
+    ExecutionRuntime runtime;
+    std::atomic<int> ran{0};
+    expect(
+        runtime.postRobotAfter("robot-delay", 25ms, [&] { ran = 1; }),
+        "delayed robot task should be accepted");
+    std::this_thread::sleep_for(80ms);
+    runtime.join();
+    expect(ran == 1, "delayed robot task should run after the wait");
+  }
+
+  {
+    ExecutionRuntime runtime;
+    std::atomic<int> ran{0};
+    const auto started = std::chrono::steady_clock::now();
+    expect(
+        runtime.postRobotAfter("robot-delay", 30s, [&] { ran = 1; }),
+        "long delayed task should be accepted");
+    runtime.join();
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    expect(
+        elapsed < 2s, "join should cancel pending delayed tasks");
+    expect(ran == 0, "cancelled delayed task should not run");
+  }
+}
+
 void testConnectionTransitions() {
   using namespace dispatcher::domain;
 
@@ -1204,6 +1234,7 @@ void testPoseMapper() {
 
 int main() {
   testExecutionRuntime();
+  testDelayedRobotTask();
   testConnectionTransitions();
   testRobotConnectionConfig();
   testControlledSshValidation();

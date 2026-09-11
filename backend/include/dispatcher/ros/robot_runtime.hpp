@@ -8,8 +8,9 @@
 #include "dispatcher/ros/pose_mapper.hpp"
 #include "dispatcher/ros/rosbridge_session.hpp"
 
-#include <memory>
+#include <atomic>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -124,9 +125,17 @@ class RobotRuntime {
     db::RobotRecord config;
     std::recursive_mutex session_mutex;
     std::mutex discovery_mutex;
+    std::atomic<bool> battery_stop{false};
+    std::string battery_subscription_id;
   };
 
   void ensureRobot(const db::RobotRecord& robot);
+  void ingestBatteryMessage(
+      const std::string& robot_id, const nlohmann::json& message);
+  void clearBatterySubscription(
+      const std::shared_ptr<RobotSession>& session_state);
+  void sampleBatteryOnce(const std::shared_ptr<RobotSession>& session_state);
+  void scheduleBatteryPoll(const std::shared_ptr<RobotSession>& session_state);
   PoseFieldMapping mappingFromJson(const nlohmann::json& json) const;
   RosDispatchResult publishRos1ActionGoal(
       const std::shared_ptr<RobotSession>& session_state,

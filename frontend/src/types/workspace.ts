@@ -36,6 +36,14 @@ export interface RobotSummary {
   pose_topic?: string;
 }
 
+export interface RobotBattery {
+  percentage: number;
+  percent: number;
+  voltage: number;
+  present: boolean;
+  updated_at: number;
+}
+
 export interface WorkspaceRobot {
   id: string;
   name: string;
@@ -44,6 +52,7 @@ export interface WorkspaceRobot {
   current_scene_id: string | null;
   current_map_version_id: string | null;
   drawable: boolean;
+  battery: RobotBattery | null;
   pose: {
     x: number;
     y: number;

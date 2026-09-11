@@ -1,6 +1,8 @@
 #include "dispatcher/concurrency/execution_runtime.hpp"
 
+#include <boost/asio/bind_executor.hpp>
 #include <boost/asio/post.hpp>
+#include <boost/asio/steady_timer.hpp>
 
 #include <algorithm>
 #include <exception>
@@ -42,6 +44,43 @@ bool ExecutionRuntime::postRobot(std::string robot_id, Task task) {
   return true;
 }
 
+bool ExecutionRuntime::postRobotAfter(
+    std::string robot_id, std::chrono::milliseconds delay, Task task) {
+  if (robot_id.empty() || !task) {
+    return false;
+  }
+  std::lock_guard lock(lifecycle_mutex_);
+  if (!accepting_.load(std::memory_order_acquire)) {
+    return false;
+  }
+  const auto strand = strandFor(robot_id);
+  auto timer = std::make_shared<boost::asio::steady_timer>(protocol_pool_);
+  {
+    std::lock_guard delayed_lock(delayed_mutex_);
+    delayed_timers_.erase(
+        std::remove_if(
+            delayed_timers_.begin(),
+            delayed_timers_.end(),
+            [](const std::weak_ptr<boost::asio::steady_timer>& item) {
+              return item.expired();
+            }),
+        delayed_timers_.end());
+    delayed_timers_.push_back(timer);
+  }
+  timer->expires_after(delay);
+  timer->async_wait(boost::asio::bind_executor(
+      *strand,
+      [timer,
+       wrapped = guarded("robot/" + std::move(robot_id), std::move(task))](
+          const boost::system::error_code& error) mutable {
+        if (error) {
+          return;
+        }
+        wrapped();
+      }));
+  return true;
+}
+
 bool ExecutionRuntime::postParallel(Task task) {
   if (!task) {
     return false;
@@ -72,6 +111,15 @@ void ExecutionRuntime::join() {
     if (!accepting_.exchange(false, std::memory_order_acq_rel)) {
       return;
     }
+  }
+  {
+    std::lock_guard delayed_lock(delayed_mutex_);
+    for (const auto& item : delayed_timers_) {
+      if (const auto timer = item.lock()) {
+        timer->cancel();
+      }
+    }
+    delayed_timers_.clear();
   }
   protocol_pool_.join();
   blocking_pool_.join();

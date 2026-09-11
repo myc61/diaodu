@@ -26,4 +26,24 @@ std::vector<CachedPose> PoseCache::snapshot() const {
   return values;
 }
 
+void PoseCache::upsertBattery(CachedBattery battery) {
+  std::lock_guard lock(mutex_);
+  batteries_[battery.robot_id] = std::move(battery);
+}
+
+std::optional<CachedBattery> PoseCache::getBattery(
+    const std::string& robot_id) const {
+  std::lock_guard lock(mutex_);
+  const auto it = batteries_.find(robot_id);
+  if (it == batteries_.end()) {
+    return std::nullopt;
+  }
+  return it->second;
+}
+
+void PoseCache::eraseBattery(const std::string& robot_id) {
+  std::lock_guard lock(mutex_);
+  batteries_.erase(robot_id);
+}
+
 }  // namespace dispatcher::ros

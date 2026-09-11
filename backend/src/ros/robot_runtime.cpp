@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <ctime>
 #include <future>
@@ -95,6 +96,11 @@ std::string localIsoAt(std::chrono::system_clock::time_point now) {
   std::snprintf(out, sizeof(out), "%s.%03d", buf, static_cast<int>(ms.count()));
   return out;
 }
+
+constexpr const char* kBatteryTopic = "/zj_humanoid/robot/battery_info";
+constexpr const char* kBatteryType = "sensor_msgs/BatteryState";
+constexpr auto kBatteryPollPeriod = std::chrono::minutes(1);
+constexpr auto kBatterySampleWindow = std::chrono::seconds(5);
 
 std::string localIsoNow() {
   return localIsoAt(std::chrono::system_clock::now());
@@ -529,6 +535,8 @@ void RobotRuntime::ensureRobot(const db::RobotRecord& robot) {
               pose_json,
               cached.stale ? "STALE" : "LOCALIZED");
         });
+    sampleBatteryOnce(session_state);
+    scheduleBatteryPoll(session_state);
   });
 
   {
@@ -548,9 +556,116 @@ void RobotRuntime::dropRobot(const std::string& robot_id) {
     session_state = it->second;
     sessions_.erase(it);
   }
+  session_state->battery_stop.store(true);
+  {
+    std::lock_guard lock(session_state->session_mutex);
+    clearBatterySubscription(session_state);
+  }
+  pose_cache_.eraseBattery(robot_id);
   if (session_state != nullptr && session_state->transport != nullptr) {
     session_state->transport->stop();
   }
+}
+
+void RobotRuntime::ingestBatteryMessage(
+    const std::string& robot_id, const nlohmann::json& message) {
+  if (!message.contains("percentage") || !message["percentage"].is_number()) {
+    return;
+  }
+  double percentage = message["percentage"].get<double>();
+  if (!std::isfinite(percentage) || percentage < 0.0) {
+    return;
+  }
+  if (percentage > 1.0) {
+    percentage = std::min(percentage / 100.0, 1.0);
+  }
+  double voltage = 0.0;
+  if (message.contains("voltage") && message["voltage"].is_number()) {
+    const auto raw = message["voltage"].get<double>();
+    if (std::isfinite(raw)) {
+      voltage = raw;
+    }
+  }
+  bool present = true;
+  if (message.contains("present") && message["present"].is_boolean()) {
+    present = message["present"].get<bool>();
+  }
+  pose_cache_.upsertBattery(CachedBattery{
+      .robot_id = robot_id,
+      .percentage = percentage,
+      .voltage = voltage,
+      .present = present,
+      .updated_at = std::chrono::system_clock::now(),
+  });
+}
+
+void RobotRuntime::clearBatterySubscription(
+    const std::shared_ptr<RobotSession>& session_state) {
+  if (session_state->battery_subscription_id.empty() ||
+      session_state->session == nullptr) {
+    return;
+  }
+  (void)session_state->session->unsubscribe(
+      session_state->battery_subscription_id);
+  session_state->battery_subscription_id.clear();
+}
+
+void RobotRuntime::sampleBatteryOnce(
+    const std::shared_ptr<RobotSession>& session_state) {
+  if (session_state->battery_stop.load()) {
+    return;
+  }
+  std::lock_guard lock(session_state->session_mutex);
+  if (session_state->battery_stop.load() || session_state->session == nullptr) {
+    return;
+  }
+  clearBatterySubscription(session_state);
+  const auto robot_id = session_state->config.id;
+  session_state->battery_subscription_id = session_state->session->subscribe(
+      kBatteryTopic,
+      kBatteryType,
+      {.throttle_rate_ms = 0, .queue_length = 1},
+      [this, session_state, robot_id](
+          std::string_view, const Json& message) {
+        if (session_state->battery_stop.load()) {
+          return;
+        }
+        ingestBatteryMessage(robot_id, message);
+        std::lock_guard inner(session_state->session_mutex);
+        clearBatterySubscription(session_state);
+      });
+  (void)execution_.postRobotAfter(
+      robot_id,
+      kBatterySampleWindow,
+      [this, session_state] {
+        if (session_state->battery_stop.load()) {
+          return;
+        }
+        std::lock_guard inner(session_state->session_mutex);
+        if (session_state->session == nullptr ||
+            session_state->session->state() !=
+                dispatcher::domain::ConnectionState::Online) {
+          return;
+        }
+        clearBatterySubscription(session_state);
+      });
+}
+
+void RobotRuntime::scheduleBatteryPoll(
+    const std::shared_ptr<RobotSession>& session_state) {
+  if (session_state->battery_stop.load()) {
+    return;
+  }
+  (void)execution_.postRobotAfter(
+      session_state->config.id,
+      kBatteryPollPeriod,
+      [this, session_state] {
+        if (session_state->battery_stop.load()) {
+          return;
+        }
+        sampleBatteryOnce(session_state);
+        scheduleBatteryPoll(session_state);
+      });
 }
 
 void RobotRuntime::refreshConnections() {

@@ -43,6 +43,7 @@ import type {
   WorldPose
 } from "../types/workspace";
 import { worldToPixel } from "../utils/mapTransform";
+import { batteryPercentText } from "../utils/battery";
 
 const scenes = ref<Scene[]>([]);
 const robots = ref<RobotSummary[]>([]);
@@ -209,27 +210,30 @@ function robotPoseHint(robot: {
   connection_state: string;
   drawable: boolean;
   pose: { stale?: boolean } | null;
+  battery?: { percent?: number } | null;
   current_scene_id?: string | null;
 }): string {
+  const battery = batteryPercentText(robot.battery);
+  const suffix = battery ? ` · 电量 ${battery}` : "";
   if (
     robot.connection_state !== "ONLINE" &&
     robot.connection_state !== "CONNECTED"
   ) {
-    return "未连接 rosbridge";
+    return "未连接 rosbridge" + suffix;
   }
   if (!robot.current_scene_id) {
-    return "未绑定本场景";
+    return "未绑定本场景" + suffix;
   }
   if (!robot.pose) {
-    return "等待定位话题";
+    return "等待定位话题" + suffix;
   }
   if (robot.pose.stale) {
-    return "位姿超时";
+    return "位姿超时" + suffix;
   }
   if (!robot.drawable) {
-    return "坐标未对齐地图";
+    return "坐标未对齐地图" + suffix;
   }
-  return "地图上可见";
+  return "地图上可见" + suffix;
 }
 
 function robotLabel(id: string | null): string {
@@ -1676,6 +1680,14 @@ onBeforeUnmount(() => {
               <div>
                 <dt>定位</dt>
                 <dd>{{ selectedInspectRobot.localization_status }}</dd>
+              </div>
+              <div>
+                <dt>电量</dt>
+                <dd>
+                  {{
+                    batteryPercentText(selectedInspectRobot.battery) || "等待电池话题"
+                  }}
+                </dd>
               </div>
               <div v-if="selectedInspectRobot.pose">
                 <dt>位姿</dt>

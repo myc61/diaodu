@@ -21,6 +21,13 @@ export interface RobotConfig {
   current_scene_id: string | null;
   current_map_version_id: string | null;
   pose_mapping: Record<string, string>;
+  battery: {
+    percentage: number;
+    percent: number;
+    voltage: number;
+    present: boolean;
+    updated_at: number;
+  } | null;
 }
 
 export interface RobotUpsertPayload {

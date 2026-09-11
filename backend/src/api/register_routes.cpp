@@ -394,6 +394,28 @@ std::vector<db::StationActionUpsert> parseStationActions(
   return actions;
 }
 
+nlohmann::json batteryToJson(const std::string& robot_id) {
+  if (appState().pose_cache == nullptr) {
+    return nullptr;
+  }
+  const auto cached = appState().pose_cache->getBattery(robot_id);
+  if (!cached.has_value()) {
+    return nullptr;
+  }
+  const int percent =
+      static_cast<int>(std::lround(cached->percentage * 100.0));
+  return {
+      {"percentage", cached->percentage},
+      {"percent", percent},
+      {"voltage", cached->voltage},
+      {"present", cached->present},
+      {"updated_at",
+       std::chrono::duration_cast<std::chrono::milliseconds>(
+           cached->updated_at.time_since_epoch())
+           .count()},
+  };
+}
+
 nlohmann::json robotToJson(const db::RobotRecord& robot) {
   nlohmann::json item{
       {"id", robot.id},
@@ -447,6 +469,7 @@ nlohmann::json robotToJson(const db::RobotRecord& robot) {
   } else {
     item["pose_message_type"] = "";
   }
+  item["battery"] = batteryToJson(robot.id);
   return item;
 }
 
@@ -759,6 +782,7 @@ void registerRoutes() {
               {"connection_state", robot->connection_state},
               {"localization_status", robot->localization_status},
               {"pose", nullptr},
+              {"battery", batteryToJson(robot_id)},
               {"drawable", false},
           };
           if (robot->current_scene_id.has_value()) {

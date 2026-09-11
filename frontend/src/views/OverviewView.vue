@@ -14,6 +14,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 
 import { listRobotConfigs } from "../api/robots";
+import { batteryPercentText } from "../utils/battery";
 import { getSystemHealth, getSystemSummary } from "../api/system";
 import type { RobotConfig } from "../types/robot";
 import type { SystemHealth, SystemSummary } from "../types/system";
@@ -221,6 +222,9 @@ onBeforeUnmount(() => {
                 <n-text depth="3" style="font-size: 12px">
                   {{ robot.host || "-" }}:{{ robot.rosbridge_port || "-" }} ·
                   {{ robot.localization_status }}
+                  <template v-if="batteryPercentText(robot.battery)">
+                    · 电量 {{ batteryPercentText(robot.battery) }}
+                  </template>
                 </n-text>
               </n-space>
             </div>

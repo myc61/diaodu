@@ -1,9 +1,11 @@
 #pragma once
 
+#include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/thread_pool.hpp>
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <functional>
 #include <memory>
@@ -11,6 +13,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <vector>
 
 namespace dispatcher::concurrency {
 
@@ -36,6 +39,8 @@ class ExecutionRuntime {
   // Tasks for one robot are serialized; tasks for different robots may run in
   // parallel on the shared protocol pool.
   bool postRobot(std::string robot_id, Task task);
+  bool postRobotAfter(
+      std::string robot_id, std::chrono::milliseconds delay, Task task);
   bool postParallel(Task task);
   bool postBlocking(Task task);
 
@@ -62,6 +67,8 @@ class ExecutionRuntime {
   mutable std::mutex lifecycle_mutex_;
   std::mutex strands_mutex_;
   std::unordered_map<std::string, std::shared_ptr<RobotStrand>> robot_strands_;
+  std::mutex delayed_mutex_;
+  std::vector<std::weak_ptr<boost::asio::steady_timer>> delayed_timers_;
 };
 
 }  // namespace dispatcher::concurrency

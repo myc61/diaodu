@@ -3,6 +3,7 @@ import Konva from "konva";
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 import type { MapPoint, MapVersion, WorkspaceRobot } from "../types/workspace";
+import { batteryPercentText, batteryTone } from "../utils/battery";
 
 const props = withDefaults(
   defineProps<{
@@ -296,13 +297,21 @@ function redrawOverlays(): void {
         })
       );
       if (props.showLabels) {
+        const battery = batteryPercentText(robot.battery);
+        const tone = batteryTone(robot.battery);
+        const batteryFill =
+          tone === "critical"
+            ? "#b42318"
+            : tone === "low"
+              ? "#b54708"
+              : "#16343d";
         group.add(
           new Konva.Text({
-            text: robot.name,
+            text: battery ? `${robot.name} ${battery}` : robot.name,
             x: 10,
             y: -18,
             fontSize: 12,
-            fill: "#16343d",
+            fill: batteryFill,
             listening: false
           })
         );
@@ -643,7 +652,7 @@ function overlaySignature(): string {
   const robots = props.robots
     .map(
       (robot) =>
-        `${robot.id}:${robot.drawable ? 1 : 0}:${robot.pose?.pixel_x ?? ""}:${robot.pose?.pixel_y ?? ""}:${robot.pose?.pixel_yaw ?? ""}:${robot.pose?.stale ? 1 : 0}`
+        `${robot.id}:${robot.drawable ? 1 : 0}:${robot.pose?.pixel_x ?? ""}:${robot.pose?.pixel_y ?? ""}:${robot.pose?.pixel_yaw ?? ""}:${robot.pose?.stale ? 1 : 0}:${robot.battery?.percent ?? ""}`
     )
     .join("|");
   const points = props.points
